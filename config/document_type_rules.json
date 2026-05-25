@@ -1,0 +1,12 @@
+[
+  {"contains_all": ["Выписка по счёту кредитной карты", "Кредитный лимит"], "document_type": "sber_credit_card", "bank": "Сбер", "account_type": "credit_card", "account_role": "sber_credit_card", "confidence": 0.96, "reason": "Сбер кредитная карта"},
+  {"contains_all": ["Выписка по платёжному счёту", "Сбер"], "document_type": "sber_debit_account", "bank": "Сбер", "account_type": "debit_account", "account_role": "sber_debit_account", "confidence": 0.94, "reason": "Сбер платёжный счёт"},
+  {"contains_any": ["АО «ТБАНК»", "АО «ТБанк»", "TBANK.RU", "Справка о движении средств"], "document_type": "tbank_statement", "bank": "Т-Банк", "account_type": "unknown", "account_role": "unknown", "confidence": 0.82, "reason": "Т-Банк statement"},
+  {"contains_all": ["АО «Яндекс Банк»", "Счёт ЭДС"], "document_type": "yandex_wallet_eds", "bank": "Яндекс Банк", "account_type": "wallet", "account_role": "yandex_wallet_eds", "confidence": 0.95, "reason": "Яндекс ЭДС"},
+  {"contains_all": ["АО «Яндекс Банк»", "Потребительский кредит"], "document_type": "yandex_credit_contract", "bank": "Яндекс Банк", "account_type": "loan_account", "account_role": "yandex_credit_contract", "confidence": 0.95, "reason": "Яндекс кредит"},
+  {"contains_any": ["ООО «ВБ Банк»", "Оплата на Wildberries"], "document_type": "wb_wallet", "bank": "ВБ Банк", "account_type": "marketplace_wallet", "account_role": "wb_wallet", "confidence": 0.9, "reason": "ВБ кошелёк"},
+  {"contains_all": ["АО «АЛЬФА-БАНК»", "Текущий счёт"], "document_type": "alfa_current_account", "bank": "Альфа-Банк", "account_type": "debit_account", "account_role": "alfa_current_account", "confidence": 0.93, "reason": "Альфа текущий счёт"},
+  {"contains_all": ["АО «АЛЬФА-БАНК»", "Счёт кредитной карты"], "document_type": "alfa_credit_card", "bank": "Альфа-Банк", "account_type": "credit_card", "account_role": "alfa_credit_card", "confidence": 0.93, "reason": "Альфа кредитная карта"},
+  {"contains_any": ["Карта рассрочки \"Халва\"", "Карта рассрочки Халва", "ПАО \"СОВКОМБАНК\"", "ПРЕДОСТАВЛЕНИЕ КРЕДИТА ЗАЕМЩИКУ"], "document_type": "sovcombank_halva", "bank": "Совкомбанк", "account_type": "installment_card", "account_role": "sovcombank_halva", "confidence": 0.9, "reason": "Совкомбанк Халва"},
+  {"contains_any": ["Application for Schengen Visa", "Harmonised application form"], "document_type": "irrelevant_document", "bank": "Не банковский документ", "account_type": "unknown", "account_role": "irrelevant", "confidence": 0.99, "reason": "Нерелевантный PDF"}
+]

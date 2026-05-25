@@ -1,0 +1,100 @@
+{
+  "Сбер": {
+    "Супермаркеты": {
+      "operation_type": "Личный расход",
+      "budget_category": "Продукты / супермаркеты",
+      "personal_amount_mode": "abs",
+      "confidence": 0.75
+    },
+    "Рестораны и кафе": {
+      "operation_type": "Личный расход",
+      "budget_category": "Кафе / доставка / рестораны",
+      "personal_amount_mode": "abs",
+      "confidence": 0.8
+    },
+    "Транспорт": {
+      "operation_type": "Личный расход",
+      "budget_category": "Транспорт",
+      "personal_amount_mode": "abs",
+      "confidence": 0.85
+    },
+    "Автомобиль": {
+      "operation_type": "Личный расход",
+      "budget_category": "Авто / каршеринг",
+      "personal_amount_mode": "abs",
+      "confidence": 0.85
+    },
+    "Одежда и аксессуары": {
+      "operation_type": "Личный расход",
+      "budget_category": "Дом / одежда / бытовое",
+      "personal_amount_mode": "abs",
+      "confidence": 0.75
+    },
+    "Коммунальные платежи, связь, интернет.": {
+      "operation_type": "Личный расход",
+      "budget_category": "Связь / интернет / подписки",
+      "personal_amount_mode": "abs",
+      "confidence": 0.75
+    },
+    "Здоровье и красота": {
+      "operation_type": "Проверить",
+      "budget_category": "Прочее / проверить",
+      "personal_amount_mode": "0",
+      "confidence": 0.35
+    },
+    "Все для дома": {
+      "operation_type": "Проверить",
+      "budget_category": "Прочее / проверить",
+      "personal_amount_mode": "0",
+      "confidence": 0.35
+    },
+    "Отдых и развлечения": {
+      "operation_type": "Проверить",
+      "budget_category": "Прочее / проверить",
+      "personal_amount_mode": "0",
+      "confidence": 0.45
+    },
+    "Прочие расходы": {
+      "operation_type": "Проверить",
+      "budget_category": "Прочее / проверить",
+      "personal_amount_mode": "0",
+      "confidence": 0.2
+    },
+    "Прочие операции": {
+      "operation_type": "Проверить",
+      "budget_category": "Прочее / проверить",
+      "personal_amount_mode": "0",
+      "confidence": 0.1
+    },
+    "Перевод СБП": {
+      "operation_type": "Проверить",
+      "budget_category": "Прочее / проверить",
+      "personal_amount_mode": "0",
+      "confidence": 0.1
+    },
+    "Перевод с карты": {
+      "operation_type": "Проверить",
+      "budget_category": "Прочее / проверить",
+      "personal_amount_mode": "0",
+      "confidence": 0.1
+    },
+    "Перевод на карту": {
+      "operation_type": "Проверить",
+      "budget_category": "Прочее / проверить",
+      "personal_amount_mode": "0",
+      "confidence": 0.1
+    },
+    "Выдача наличных": {
+      "operation_type": "cash_withdrawal",
+      "budget_category": "Прочее / проверить",
+      "personal_amount_mode": "0",
+      "confidence": 0.85
+    },
+    "Возврат, отмена операции": {
+      "operation_type": "Возврат",
+      "budget_category": "Прочее / проверить",
+      "personal_amount_mode": "0",
+      "confidence": 0.7
+    }
+  }
+}

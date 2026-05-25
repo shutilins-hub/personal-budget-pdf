@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+data/
+exports/
+*.pdf
+*.sqlite3
+*.db
+
+tests/private_fixtures/
