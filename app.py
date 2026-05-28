@@ -584,7 +584,7 @@ def import_pdfs(profile: dict, uploaded_files: list, start_date: date, end_date:
                     "duplicates_skipped": 0,
                     "filtered_operations": 0,
                     "skipped_irrelevant": True,
-                    "first_30_lines": text.splitlines()[:30],
+                    "first_30_lines": [sanitize_text(line) for line in text.splitlines()[:30]],
                 }
             )
             all_text_parts.append(f"===== {source_file} | skipped_irrelevant =====\n{text}")
@@ -649,7 +649,7 @@ def import_pdfs(profile: dict, uploaded_files: list, start_date: date, end_date:
                 "saved_operations": stats["inserted"],
                 "duplicates_skipped": stats["duplicates"],
                 "filtered_operations": stats["filtered"],
-                "first_30_lines": text.splitlines()[:30],
+                "first_30_lines": [sanitize_text(line) for line in text.splitlines()[:30]],
             }
         )
     if total_inserted:
@@ -3793,7 +3793,7 @@ def render_diagnostics_tab(operations: pd.DataFrame) -> None:
     st.dataframe(recurring_operations_summary(operations), use_container_width=True, hide_index=True)
     st.subheader("Повторяющиеся люди")
     st.dataframe(recurring_people_summary(operations), use_container_width=True, hide_index=True)
-    st.caption("Debug-файлы сохраняются в папку exports.")
+    st.caption("Debug-файлы создаются только при BUDGET_DEBUG_EXPORTS=1 и проходят маскирование.")
 
 
 def main() -> None:

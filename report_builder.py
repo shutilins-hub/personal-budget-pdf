@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
 
 import pandas as pd
+
+from debug_exports import (
+    debug_exports_enabled,
+    sanitize_dataframe,
+    sanitized_text_excerpt,
+    write_debug_json,
+    write_debug_text,
+    write_debug_tsv,
+)
 
 
 EXPORTS_DIR = Path(__file__).resolve().parent / "exports"
@@ -12,7 +20,7 @@ EXPORTS_DIR = Path(__file__).resolve().parent / "exports"
 def export_operations_csv(operations: pd.DataFrame, profile_id: str) -> Path:
     EXPORTS_DIR.mkdir(exist_ok=True)
     path = EXPORTS_DIR / f"operations_{profile_id}.csv"
-    operations.to_csv(path, index=False)
+    sanitize_dataframe(operations).to_csv(path, index=False)
     return path
 
 
@@ -21,79 +29,73 @@ def write_import_debug(
     parsed_operations: list[dict],
     import_summary: dict,
 ) -> None:
-    EXPORTS_DIR.mkdir(exist_ok=True)
+    if not debug_exports_enabled():
+        return
     operations_df = pd.DataFrame(parsed_operations)
-    (EXPORTS_DIR / "extracted_text_debug.txt").write_text(extracted_text, encoding="utf-8")
-    operations_df.reindex(
-        columns=[
-            "source_file",
-            "document_type",
-            "bank",
-            "account_type",
-            "account_role",
-            "account_id",
-            "owner_name",
-            "operation_datetime",
-            "raw_category",
-            "raw_description",
-            "description",
-            "normalized_description",
-            "merchant_anchor",
-            "person_anchor",
-            "phone_anchor",
-            "card_last4",
-            "auth_code",
-            "bank_amount",
-            "direction",
-            "cashflow_amount",
-            "operation_type",
-            "budget_category",
-            "personal_amount",
-            "budget_amount",
-            "planning_amount",
-            "debt_amount",
-            "count_in_budget",
-            "count_in_plan",
-            "count_in_cashflow",
-            "plan_category",
-            "plan_exclusion_reason",
-            "confidence",
-            "classification_source",
-            "needs_review",
-            "duplicate_key",
-            "linked_operation_id",
-        ]
-    ).to_csv(EXPORTS_DIR / "parsed_operations_debug.tsv", sep="\t", index=False)
-    raw_category_summary(operations_df).to_csv(EXPORTS_DIR / "raw_category_summary.tsv", sep="\t", index=False)
-    unrecognized_summary(operations_df).to_csv(EXPORTS_DIR / "unrecognized_summary.tsv", sep="\t", index=False)
-    recurring_operations_summary(operations_df).to_csv(EXPORTS_DIR / "recurring_operations_summary.tsv", sep="\t", index=False)
-    sber_blocks_debug(operations_df).to_csv(EXPORTS_DIR / "sber_operations_debug.tsv", sep="\t", index=False)
-    (EXPORTS_DIR / "import_summary.json").write_text(
-        json.dumps(import_summary, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    write_debug_text(
+        "extracted_text_debug.txt",
+        "Debug exports enabled. Text is sanitized and truncated.\n\n" + sanitized_text_excerpt(extracted_text),
     )
-    (EXPORTS_DIR / "document_detection_debug.json").write_text(
-        json.dumps(import_summary.get("document_detection", []), ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    write_debug_tsv(
+        "parsed_operations_debug.tsv",
+        operations_df.reindex(
+            columns=[
+                "source_file",
+                "document_type",
+                "bank",
+                "account_type",
+                "account_role",
+                "account_id",
+                "owner_name",
+                "operation_datetime",
+                "raw_category",
+                "raw_description",
+                "description",
+                "normalized_description",
+                "merchant_anchor",
+                "person_anchor",
+                "phone_anchor",
+                "card_last4",
+                "auth_code",
+                "bank_amount",
+                "direction",
+                "cashflow_amount",
+                "operation_type",
+                "budget_category",
+                "personal_amount",
+                "budget_amount",
+                "planning_amount",
+                "debt_amount",
+                "count_in_budget",
+                "count_in_plan",
+                "count_in_cashflow",
+                "plan_category",
+                "plan_exclusion_reason",
+                "confidence",
+                "classification_source",
+                "needs_review",
+                "duplicate_key",
+                "linked_operation_id",
+            ]
+        ),
     )
-    (EXPORTS_DIR / "account_metadata_debug.json").write_text(
-        json.dumps(import_summary.get("account_metadata", []), ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    write_debug_tsv("raw_category_summary.tsv", raw_category_summary(operations_df))
+    write_debug_tsv("unrecognized_summary.tsv", unrecognized_summary(operations_df))
+    write_debug_tsv("recurring_operations_summary.tsv", recurring_operations_summary(operations_df))
+    write_debug_tsv("sber_operations_debug.tsv", sber_blocks_debug(operations_df))
+    write_debug_json("import_summary.json", import_summary)
+    write_debug_json("document_detection_debug.json", import_summary.get("document_detection", []))
+    write_debug_json("account_metadata_debug.json", import_summary.get("account_metadata", []))
+    write_debug_tsv(
+        "dedup_debug.tsv",
+        operations_df.reindex(columns=["source_file", "duplicate_key", "operation_datetime", "bank_amount", "description"]),
     )
-    operations_df.reindex(columns=["source_file", "duplicate_key", "operation_datetime", "bank_amount", "description"]).to_csv(
-        EXPORTS_DIR / "dedup_debug.tsv",
-        sep="\t",
-        index=False,
+    write_debug_tsv(
+        "internal_transfer_links_debug.tsv",
+        operations_df.reindex(columns=["id", "linked_operation_id", "source_file", "operation_datetime", "bank_amount", "description"]),
     )
-    operations_df.reindex(columns=["id", "linked_operation_id", "source_file", "operation_datetime", "bank_amount", "description"]).to_csv(
-        EXPORTS_DIR / "internal_transfer_links_debug.tsv",
-        sep="\t",
-        index=False,
-    )
-
 
 def write_plan_debug(profile: dict, history_months_used: list[str] | None = None, warnings: list[str] | None = None) -> dict:
-    EXPORTS_DIR.mkdir(exist_ok=True)
     plan = profile.get("plan", {}) or {}
     plan_sum = sum(float(value or 0) for value in plan.values())
     source = profile.get("plan_source")
@@ -113,12 +115,11 @@ def write_plan_debug(profile: dict, history_months_used: list[str] | None = None
     }
     if debug["monthly_limit"] != plan_sum:
         debug["warnings"].append("monthly_limit не равен сумме категорий плана")
-    (EXPORTS_DIR / "plan_debug.json").write_text(json.dumps(debug, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_debug_json("plan_debug.json", debug)
     return debug
 
 
 def write_layered_plan_debug(debug_tables: dict[str, pd.DataFrame]) -> None:
-    EXPORTS_DIR.mkdir(exist_ok=True)
     mapping = {
         "plan_source_files": "plan_source_files_debug.tsv",
         "monthly_plan_totals": "monthly_plan_totals_debug.tsv",
@@ -127,7 +128,7 @@ def write_layered_plan_debug(debug_tables: dict[str, pd.DataFrame]) -> None:
     }
     for key, filename in mapping.items():
         table = debug_tables.get(key, pd.DataFrame())
-        table.to_csv(EXPORTS_DIR / filename, sep="\t", index=False)
+        write_debug_tsv(filename, table)
 
 
 def raw_category_summary(operations: pd.DataFrame) -> pd.DataFrame:
@@ -166,7 +167,8 @@ def normalize_merchant(description: str) -> str:
 
 
 def recurring_operations_summary(operations: pd.DataFrame) -> pd.DataFrame:
-    if operations.empty or "description" not in operations:
+    required = {"description", "id", "personal_amount", "budget_category"}
+    if operations.empty or not required.issubset(operations.columns):
         return pd.DataFrame(columns=["merchant", "count", "sum", "suggested_category"])
     df = operations.copy()
     if "merchant_anchor" in df.columns:

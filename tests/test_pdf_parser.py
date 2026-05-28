@@ -1,7 +1,11 @@
 import unittest
+import os
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
-from pdf_parser import SBER_DEBUG_PATH, parse_money, parse_sber
+import debug_exports
+from pdf_parser import parse_money, parse_sber
 
 try:
     import fitz
@@ -11,23 +15,26 @@ except ModuleNotFoundError:
 
 class SberParserTest(unittest.TestCase):
     def test_column_block_expense_operation(self):
-        operations = parse_sber(
-            "\n".join(
-                [
-                    "15.05.2026",
-                    "09:29",
-                    "Рестораны и кафе",
-                    "280,00",
-                    "260 749,62",
-                    "15.05.2026",
-                    "614550",
-                    "COFFEE POINT MOSCOW RUS. Операция по карте ****0653",
-                ]
-            ),
-            "test_profile",
-            "sber_test.pdf",
-        )
-        debug_text = SBER_DEBUG_PATH.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"BUDGET_DEBUG_EXPORTS": "1"}, clear=False):
+                with patch.object(debug_exports, "EXPORTS_DIR", Path(tmp)):
+                    operations = parse_sber(
+                        "\n".join(
+                            [
+                                "15.05.2026",
+                                "09:29",
+                                "Рестораны и кафе",
+                                "280,00",
+                                "260 749,62",
+                                "15.05.2026",
+                                "614550",
+                                "COFFEE POINT MOSCOW RUS. Операция по карте ****0653",
+                            ]
+                        ),
+                        "test_profile",
+                        "sber_test.pdf",
+                    )
+                    debug_text = (Path(tmp) / "sber_raw_lines_debug.txt").read_text(encoding="utf-8")
 
         self.assertEqual(len(operations), 1)
         self.assertEqual(operations[0]["operation_datetime"], "2026-05-15T09:29:00")

@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import calendar
-import json
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from budget_engine import dashboard_metrics, plan_fact
-
-
-EXPORTS_DIR = Path(__file__).resolve().parent / "exports"
+from debug_exports import write_debug_json
 
 
 def _money_value(value: Any) -> float:
@@ -350,7 +346,6 @@ def build_financial_health_report(
 
 
 def write_financial_health_debug(report: dict[str, Any]) -> None:
-    EXPORTS_DIR.mkdir(exist_ok=True)
     debug = {
         key: report.get(key)
         for key in [
@@ -363,4 +358,4 @@ def write_financial_health_debug(report: dict[str, Any]) -> None:
             "month_status",
         ]
     }
-    (EXPORTS_DIR / "financial_health_debug.json").write_text(json.dumps(debug, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_debug_json("financial_health_debug.json", debug)

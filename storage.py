@@ -75,7 +75,6 @@ def is_suspicious_operation(operation: dict[str, Any]) -> bool:
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    (BASE_DIR / "exports").mkdir(exist_ok=True)
 
 
 def init_db() -> None:

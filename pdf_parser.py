@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
 
+from debug_exports import debug_exports_enabled, write_debug_text
+
 try:
     import fitz
 except ModuleNotFoundError:
@@ -15,6 +17,8 @@ except ModuleNotFoundError:
 from privacy import sanitize_text
 
 
+EXPORTS_DIR = Path(__file__).resolve().parent / "exports"
+SBER_DEBUG_PATH = EXPORTS_DIR / "sber_raw_lines_debug.txt"
 DATE_RE = re.compile(r"(\d{2}[./]\d{2}[./]\d{2,4})(?:\s+(\d{2}:\d{2}(?::\d{2})?))?")
 AMOUNT_RE = re.compile(r"([+-]?\s?\d[\d\s.,]*)(?:\s?₽|\s?руб\.?|\s?RUB)?")
 SBER_MONEY_RE = re.compile(r"^[+]?\d[\d\s\u00A0]*,\d{2}$")
@@ -29,8 +33,6 @@ AUTH_DESCRIPTION_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}\s+\d{5,8}\b")
 SBER_DATE_LINE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
 SBER_TIME_LINE_RE = re.compile(r"^\d{2}:\d{2}$")
 AUTH_CODE_LINE_RE = re.compile(r"^\d{5,8}$")
-EXPORTS_DIR = Path(__file__).resolve().parent / "exports"
-SBER_DEBUG_PATH = EXPORTS_DIR / "sber_raw_lines_debug.txt"
 SERVICE_LINE_MARKERS = (
     "Выписка по",
     "Страница",
@@ -408,12 +410,13 @@ def cleanup_sber_description(line: str) -> str:
 
 
 def write_sber_debug(lines: list[str], statuses: list[str], details: list[str]) -> None:
-    EXPORTS_DIR.mkdir(exist_ok=True)
+    if not debug_exports_enabled():
+        return
     rows = []
     for index, line in enumerate(lines, start=1):
         detail = f" | {details[index - 1]}" if details[index - 1] else ""
-        rows.append(f"{index:04d} | {statuses[index - 1]}{detail} | {line}")
-    SBER_DEBUG_PATH.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
+        rows.append(f"{index:04d} | {statuses[index - 1]}{detail} | {sanitize_text(line)}")
+    write_debug_text("sber_raw_lines_debug.txt", "\n".join(rows) + ("\n" if rows else ""))
 
 
 def build_operation(

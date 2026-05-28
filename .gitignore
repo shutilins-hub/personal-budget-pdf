@@ -2,9 +2,17 @@
 __pycache__/
 *.pyc
 .DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+*.log
+*.tmp
 
 data/
 exports/
+demo_dataset/
 *.pdf
 *.sqlite3
 *.db
