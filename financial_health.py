@@ -57,10 +57,14 @@ def _sort_recommendations(recommendations: list[dict[str, Any]]) -> list[dict[st
     return sorted(recommendations, key=lambda item: order.get(item.get("severity", "info"), 3))
 
 
-def _category_risks(operations: pd.DataFrame, plan: pd.DataFrame) -> tuple[list[dict[str, Any]], float]:
+def _category_risks(
+    operations: pd.DataFrame,
+    plan: pd.DataFrame,
+    allocations: pd.DataFrame | None = None,
+) -> tuple[list[dict[str, Any]], float]:
     risks: list[dict[str, Any]] = []
     categories_without_limit_amount = 0.0
-    pf = plan_fact(operations, plan)
+    pf = plan_fact(operations, plan, allocations=allocations)
     if pf.empty:
         return risks, categories_without_limit_amount
     for _, row in pf.iterrows():
@@ -115,6 +119,7 @@ def build_financial_health_report(
     plan: pd.DataFrame,
     income_plan: pd.DataFrame | None = None,
     today: date | None = None,
+    allocations: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
     start_date, end_date = _month_bounds(report_month)
@@ -129,7 +134,7 @@ def build_financial_health_report(
     month_progress = days_passed / days_in_month if days_in_month else 0.0
 
     month_plan = _plan_limit(plan)
-    metrics = dashboard_metrics(operations, month_plan)
+    metrics = dashboard_metrics(operations, month_plan, allocations=allocations)
     clean_expenses = _money_value(metrics.get("net_expense"))
     personal_income = _money_value(metrics.get("personal_income"))
     gross_expenses = _money_value(metrics.get("gross_expense"))
@@ -178,7 +183,7 @@ def build_financial_health_report(
         ratio_status = "danger"
         ratio_text = "Расходы превышают личные доходы месяца. Нужна проверка доходов или сокращение трат."
 
-    category_risks, categories_without_limit_amount = _category_risks(operations, plan)
+    category_risks, categories_without_limit_amount = _category_risks(operations, plan, allocations=allocations)
 
     if operations is None or operations.empty:
         review_count = 0

@@ -37,6 +37,10 @@ DISPLAY_OPERATION_COLUMNS = {
     "needs_review": "проверить",
 }
 
+OPERATION_DISPLAY_LABELS = {
+    "Разделено": "Разделено на части",
+}
+
 ACCOUNT_TYPE_LABELS = {
     "debit_account": "Дебетовая карта",
     "credit_card": "Кредитная карта",
@@ -113,6 +117,13 @@ def import_status_label(value: str | None) -> str:
     if value is None or pd.isna(value):
         return "Не определён"
     return IMPORT_STATUS_LABELS.get(value, "Не определён")
+
+
+def operation_display_label(value: str | None) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    value = str(value)
+    return OPERATION_DISPLAY_LABELS.get(value, value)
 
 
 def import_period_display(period_start: str | None, period_end: str | None) -> str:

@@ -12,7 +12,7 @@ import streamlit as st
 import storage
 from app_config import get_app_config, upload_within_limit, verify_password
 from bank_adapters import detect_document_type, link_internal_transfers, parse_by_document_type
-from budget_engine import dashboard_metrics, financial_health_assessment, income_plan_fact, plan_fact
+from budget_engine import build_budget_rows, dashboard_metrics, financial_health_assessment, income_plan_fact, plan_fact
 from category_mapping import EXPENSE_CATEGORIES, INCOME_CATEGORIES
 from classifier import build_rule_from_operation, classify_operations, rule_matches
 from debug_exports import debug_exports_enabled
@@ -72,6 +72,7 @@ from ui_flow import (
     format_review_operation_line,
     import_period_display,
     import_status_label,
+    operation_display_label,
     review_count_for_operations,
     sort_cleanup_groups,
     visible_operation_columns,
@@ -100,6 +101,7 @@ from storage import (
     latest_month_with_operations,
     latest_operation_date,
     operations_df,
+    allocations_df,
     save_profile,
     save_custom_categories,
     save_merchant_rules,
@@ -381,8 +383,15 @@ def compact_new_profile_form() -> None:
             st.rerun()
 
 
-def render_sidebar(profile: dict, operations: pd.DataFrame, history: pd.DataFrame, start_date: date, end_date: date) -> None:
-    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0))
+def render_sidebar(
+    profile: dict,
+    operations: pd.DataFrame,
+    history: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+    allocations: pd.DataFrame | None = None,
+) -> None:
+    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0), allocations=allocations)
     st.sidebar.caption(
         f"В месяце: {len(operations)} операций · На проверку: {int(metrics['review_count'])} · "
         f"Осталось: {money(metrics['limit_left'])}"
@@ -850,8 +859,8 @@ def period_picker(profile_id: str) -> tuple[str | None, date, date]:
     return start.strftime("%Y-%m"), start, end
 
 
-def dashboard(profile: dict, operations: pd.DataFrame) -> None:
-    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0))
+def dashboard(profile: dict, operations: pd.DataFrame, allocations: pd.DataFrame | None = None) -> None:
+    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0), allocations=allocations)
     cols = st.columns(4)
     cols[0].metric("Личные доходы", money(metrics["personal_income"]))
     cols[1].metric("Расходы до компенсаций", money(metrics["gross_expense"]))
@@ -868,8 +877,14 @@ def dashboard(profile: dict, operations: pd.DataFrame) -> None:
         st.warning("Часть операций не распознана. Проверьте их вручную.")
 
 
-def month_status_text(profile: dict, operations: pd.DataFrame, start_date: date, end_date: date) -> tuple[str, str]:
-    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0))
+def month_status_text(
+    profile: dict,
+    operations: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+    allocations: pd.DataFrame | None = None,
+) -> tuple[str, str]:
+    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0), allocations=allocations)
     days_elapsed, days_in_month = month_progress(start_date, end_date)
     progress = days_elapsed / days_in_month if days_in_month else 0
     used = metrics["net_expense"] / metrics["limit"] if metrics["limit"] else 0
@@ -889,6 +904,8 @@ def get_operations_for_category(profile_id: str, month: str | None, category: st
         return pd.DataFrame()
     start_date, end_date = month_range(month)
     month_operations = operations_df(profile_id, start_date, end_date)
+    month_allocations = allocations_df(profile_id, start_date, end_date)
+    month_operations = build_budget_rows(month_operations, month_allocations)
     if month_operations.empty:
         return month_operations
     operation_type = month_operations.get("operation_type", pd.Series("", index=month_operations.index)).fillna("")
@@ -920,7 +937,7 @@ def category_operations_display(category_operations: pd.DataFrame) -> pd.DataFra
             "Описание": df["description"].fillna(""),
             "Сумма": amounts.map(money),
             "Банк": df["bank"].fillna(""),
-            "Статус": df["operation_type"].fillna("Проверить"),
+            "Статус": df["operation_type"].fillna("Проверить").map(operation_display_label),
         }
     )
 
@@ -1101,9 +1118,13 @@ def render_category_operations(category: str, category_operations: pd.DataFrame,
             dt = pd.to_datetime(row.get("operation_datetime"), errors="coerce")
             date_text = dt.strftime("%d.%m") if pd.notna(dt) else ""
             col1.write(f"{date_text} · {row.get('description', '')}")
-            col1.caption(f"{money(float(row.get('_amount') or 0))} · {row.get('bank', '')} · {row.get('operation_type', 'Расход')}")
+            operation_type_label = operation_display_label(row.get("operation_type", "Расход"))
+            col1.caption(f"{money(float(row.get('_amount') or 0))} · {row.get('bank', '')} · {operation_type_label}")
             with col2:
-                render_category_operation_actions(row, profile, category, make_widget_key(key_prefix, idx))
+                if row.get("source_operation_id") or str(row.get("id") or "").startswith("allocation_"):
+                    st.caption("Часть split. Редактирование будет в следующей фазе.")
+                else:
+                    render_category_operation_actions(row, profile, category, make_widget_key(key_prefix, idx))
 
 
 def render_category_expense_row(category: str, fact: float, plan: float, operations: pd.DataFrame, profile: dict, month: str | None, key_scope: str = "category") -> None:
@@ -1120,8 +1141,16 @@ def render_category_expense_row(category: str, fact: float, plan: float, operati
         render_category_operations(category, category_operations, fact, plan, profile, safe_category)
 
 
-def render_category_progress(operations: pd.DataFrame, plan: pd.DataFrame, profile: dict | None = None, month: str | None = None, limit: int = 12, key_scope: str = "category") -> None:
-    pf = plan_fact(operations, plan)
+def render_category_progress(
+    operations: pd.DataFrame,
+    plan: pd.DataFrame,
+    profile: dict | None = None,
+    month: str | None = None,
+    limit: int = 12,
+    key_scope: str = "category",
+    allocations: pd.DataFrame | None = None,
+) -> None:
+    pf = plan_fact(operations, plan, allocations=allocations)
     if pf.empty:
         st.info("План-факт по категориям появится после импорта и расчёта плана.")
         return
@@ -1281,10 +1310,23 @@ def render_recommendation_card(recommendation: dict, index: int) -> None:
     )
 
 
-def render_financial_health_block(profile: dict, operations: pd.DataFrame, plan: pd.DataFrame, report_month: str | None) -> None:
+def render_financial_health_block(
+    profile: dict,
+    operations: pd.DataFrame,
+    plan: pd.DataFrame,
+    report_month: str | None,
+    allocations: pd.DataFrame | None = None,
+) -> None:
     if not report_month:
         return
-    report = build_financial_health_report(profile["id"], report_month, operations, plan, profile_income_plan_df(profile))
+    report = build_financial_health_report(
+        profile["id"],
+        report_month,
+        operations,
+        plan,
+        profile_income_plan_df(profile),
+        allocations=allocations,
+    )
     metrics = report["key_metrics"]
     safe = report["safe_to_spend"]
     ratio = report["income_expense_ratio"]
@@ -1312,7 +1354,14 @@ def render_financial_health_block(profile: dict, operations: pd.DataFrame, plan:
             render_recommendation_card(recommendation, index)
 
 
-def attention_items(profile: dict, operations: pd.DataFrame, history: pd.DataFrame, report_month: str | None, plan: pd.DataFrame) -> list[dict]:
+def attention_items(
+    profile: dict,
+    operations: pd.DataFrame,
+    history: pd.DataFrame,
+    report_month: str | None,
+    plan: pd.DataFrame,
+    allocations: pd.DataFrame | None = None,
+) -> list[dict]:
     items: list[dict] = []
     if not operations.empty:
         review = operations[operations["needs_review"] == True].copy()
@@ -1330,7 +1379,7 @@ def attention_items(profile: dict, operations: pd.DataFrame, history: pd.DataFra
                         "category": row.get("budget_category") or row.get("plan_category") or "Прочее / проверить",
                     }
                 )
-    pf = plan_fact(operations, plan)
+    pf = plan_fact(operations, plan, allocations=allocations)
     if not pf.empty:
         over = pf[(pf["plan"] > 0) & (pf["fact"] > pf["plan"])].sort_values("diff").head(3)
         for _, row in over.iterrows():
@@ -1418,9 +1467,30 @@ def render_clickable_attention_cards(items: list[dict]) -> None:
         render_attention_card_action(item, index)
 
 
-def render_home_page(profile: dict, operations: pd.DataFrame, history: pd.DataFrame, plan: pd.DataFrame, report_month: str | None, start_date: date, end_date: date, latest_date: str | None) -> None:
-    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0))
-    health = build_financial_health_report(profile["id"], report_month, operations, plan, profile_income_plan_df(profile)) if report_month else {}
+def render_home_page(
+    profile: dict,
+    operations: pd.DataFrame,
+    history: pd.DataFrame,
+    plan: pd.DataFrame,
+    report_month: str | None,
+    start_date: date,
+    end_date: date,
+    latest_date: str | None,
+    allocations: pd.DataFrame | None = None,
+) -> None:
+    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0), allocations=allocations)
+    health = (
+        build_financial_health_report(
+            profile["id"],
+            report_month,
+            operations,
+            plan,
+            profile_income_plan_df(profile),
+            allocations=allocations,
+        )
+        if report_month
+        else {}
+    )
     data_quality = health.get("data_quality", {})
     category_risks = health.get("category_risks", [])
     no_limit_amount = float(data_quality.get("categories_without_limit_amount") or 0)
@@ -1576,8 +1646,18 @@ def render_compact_home_metrics(metrics: dict, profile: dict, operations: pd.Dat
     render_metric_grid(metric_items)
 
 
-def render_control_dashboard(profile: dict, operations: pd.DataFrame, history: pd.DataFrame, plan: pd.DataFrame, report_month: str | None, start_date: date, end_date: date, latest_date: str | None) -> None:
-    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0))
+def render_control_dashboard(
+    profile: dict,
+    operations: pd.DataFrame,
+    history: pd.DataFrame,
+    plan: pd.DataFrame,
+    report_month: str | None,
+    start_date: date,
+    end_date: date,
+    latest_date: str | None,
+    allocations: pd.DataFrame | None = None,
+) -> None:
+    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0), allocations=allocations)
     st.markdown(
         f"""
         <div class="budget-hero">
@@ -1598,11 +1678,11 @@ def render_control_dashboard(profile: dict, operations: pd.DataFrame, history: p
         f'Последняя операция: <b>{latest_date or "нет данных"}</b></div>',
         unsafe_allow_html=True,
     )
-    render_financial_health_block(profile, operations, plan, report_month)
-    render_category_progress(operations, plan, profile, report_month, key_scope="home")
+    render_financial_health_block(profile, operations, plan, report_month, allocations=allocations)
+    render_category_progress(operations, plan, profile, report_month, key_scope="home", allocations=allocations)
     credit_obligations(profile, metrics)
     st.subheader("Что требует внимания")
-    items = attention_items(profile, operations, history, report_month, plan)
+    items = attention_items(profile, operations, history, report_month, plan, allocations=allocations)
     render_clickable_attention_cards(items)
 
 
@@ -1651,8 +1731,14 @@ def credit_obligations(profile: dict, metrics: dict[str, float]) -> None:
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
-def render_health(profile: dict, operations: pd.DataFrame, start_date: date, end_date: date) -> None:
-    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0))
+def render_health(
+    profile: dict,
+    operations: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+    allocations: pd.DataFrame | None = None,
+) -> None:
+    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0), allocations=allocations)
     days_elapsed, days_in_month = month_progress(start_date, end_date)
     health = financial_health_assessment(metrics, days_elapsed, days_in_month, int(metrics["review_count"]))
     st.info(f"{health['status']}: {health['message']}")
@@ -1662,15 +1748,20 @@ def render_health(profile: dict, operations: pd.DataFrame, start_date: date, end
         )
 
 
-def render_main_charts(profile: dict, operations: pd.DataFrame, plan: pd.DataFrame) -> None:
-    expense_pf = plan_fact(operations, plan)
+def render_main_charts(
+    profile: dict,
+    operations: pd.DataFrame,
+    plan: pd.DataFrame,
+    allocations: pd.DataFrame | None = None,
+) -> None:
+    expense_pf = plan_fact(operations, plan, allocations=allocations)
     chart_source = expense_pf[expense_pf["fact"] != 0][["budget_category", "plan", "fact"]]
     if not chart_source.empty:
         st.subheader("План-факт по расходам")
         st.bar_chart(chart_source.set_index("budget_category")[["plan", "fact"]])
         st.subheader("Структура чистых расходов")
         st.bar_chart(chart_source.set_index("budget_category")["fact"])
-    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0))
+    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0), allocations=allocations)
     st.subheader("Доходы vs чистые расходы")
     st.bar_chart(
         pd.DataFrame(
@@ -1682,9 +1773,9 @@ def render_main_charts(profile: dict, operations: pd.DataFrame, plan: pd.DataFra
     )
 
 
-def render_income_section(profile: dict, operations: pd.DataFrame) -> None:
+def render_income_section(profile: dict, operations: pd.DataFrame, allocations: pd.DataFrame | None = None) -> None:
     st.subheader("Доходы месяца")
-    income_df = income_plan_fact(operations, profile_income_plan_df(profile))
+    income_df = income_plan_fact(operations, profile_income_plan_df(profile), allocations=allocations)
     if income_df.empty:
         st.info("Доходов за выбранный месяц пока нет.")
     else:
@@ -2070,7 +2161,12 @@ def profile_income_plan_df(profile: dict) -> pd.DataFrame:
 def display_operations(operations: pd.DataFrame, include_technical: bool = False) -> pd.DataFrame:
     columns = visible_operation_columns(include_technical)
     existing = [column for column in columns if column in operations.columns]
-    return operations[existing].rename(columns=columns)
+    display = operations[existing].copy()
+    if "operation_type" in display.columns:
+        display["operation_type"] = display["operation_type"].map(operation_display_label)
+    if "budget_category" in display.columns:
+        display["budget_category"] = display["budget_category"].map(operation_display_label)
+    return display.rename(columns=columns)
 
 
 def editable_review(profile: dict, operations: pd.DataFrame, key_prefix: str = "review") -> None:
@@ -3152,7 +3248,13 @@ def render_cleanup_page(profile: dict, operations: pd.DataFrame, history: pd.Dat
     editable_review(profile, operations, key_prefix="cleanup_review")
 
 
-def render_simplified_plan_tab(profile: dict, history: pd.DataFrame, report_month: str | None) -> None:
+def render_simplified_plan_tab(
+    profile: dict,
+    history: pd.DataFrame,
+    report_month: str | None,
+    allocations: pd.DataFrame | None = None,
+) -> None:
+    history = build_budget_rows(history, allocations)
     render_user_journey(history, pd.DataFrame(), profile, "План месяца")
     st.write("Здесь можно принять рекомендованный план или вручную поправить лимиты по категориям.")
     if not report_month:
@@ -4055,7 +4157,16 @@ def render_profile_and_upload_page(profile: dict, history: pd.DataFrame, operati
     upload_pdf(profile, start_date, end_date)
 
 
-def render_control_page(profile: dict, operations: pd.DataFrame, history: pd.DataFrame, plan: pd.DataFrame, report_month: str | None, start_date: date, end_date: date) -> None:
+def render_control_page(
+    profile: dict,
+    operations: pd.DataFrame,
+    history: pd.DataFrame,
+    plan: pd.DataFrame,
+    report_month: str | None,
+    start_date: date,
+    end_date: date,
+    allocations: pd.DataFrame | None = None,
+) -> None:
     latest_date = latest_operation_date(profile["id"])
     if operations.empty:
         if history.empty and st.session_state.get("has_uploaded_files"):
@@ -4064,13 +4175,28 @@ def render_control_page(profile: dict, operations: pd.DataFrame, history: pd.Dat
             st.info("Нет операций. Начните с раздела “Профиль и загрузка”.")
         else:
             st.info("В базе есть операции, но за выбранный период ничего не найдено. Проверьте месяц отчёта.")
-    render_control_dashboard(profile, operations, history, plan, report_month, start_date, end_date, latest_date)
-    render_income_section(profile, operations)
+    render_control_dashboard(profile, operations, history, plan, report_month, start_date, end_date, latest_date, allocations=allocations)
+    render_income_section(profile, operations, allocations=allocations)
     render_operation_reassignment_section(profile, operations)
     with st.expander("Список операций месяца"):
         st.dataframe(display_operations(operations), use_container_width=True, hide_index=True)
+        if allocations is not None and not allocations.empty:
+            parts = allocations.copy()
+            parts["operation_type"] = parts["operation_type"].map(operation_display_label)
+            parts = parts.rename(
+                columns={
+                    "amount": "сумма части",
+                    "operation_type": "тип",
+                    "budget_category": "категория",
+                    "comment": "комментарий",
+                    "description": "операция",
+                }
+            )
+            columns = ["операция", "сумма части", "тип", "категория", "комментарий"]
+            with st.expander("Части разделённых операций", expanded=False):
+                st.dataframe(parts[[column for column in columns if column in parts.columns]], use_container_width=True, hide_index=True)
     with st.expander("Подробный план-факт"):
-        st.dataframe(plan_fact(operations, plan), use_container_width=True, hide_index=True)
+        st.dataframe(plan_fact(operations, plan, allocations=allocations), use_container_width=True, hide_index=True)
 
 
 def render_diagnostics_tab(operations: pd.DataFrame) -> None:
@@ -4120,7 +4246,9 @@ def main() -> None:
     compact_new_profile_form()
     report_month, start_date, end_date = period_picker(profile["id"])
     operations = operations_df(profile["id"], start_date, end_date)
+    allocations = allocations_df(profile["id"], start_date, end_date)
     history = operations_df(profile["id"])
+    history_allocations = allocations_df(profile["id"])
     plan = profile_plan_df(profile)
     latest_date = latest_operation_date(profile["id"])
     nav_tabs = ["Главная", "Профиль и загрузка", "Очистка", "План", "Контроль", "Правила", "Диагностика"]
@@ -4128,7 +4256,7 @@ def main() -> None:
         st.session_state["active_tab"] = "Очистка"
     if "active_tab" not in st.session_state or st.session_state["active_tab"] not in nav_tabs:
         st.session_state["active_tab"] = "Главная" if not history.empty else "Профиль и загрузка"
-    render_sidebar(profile, operations, history, start_date, end_date)
+    render_sidebar(profile, operations, history, start_date, end_date, allocations=allocations)
     st.caption(
         f"Операций в месяце: {len(operations)} · Операций в базе: {len(history)} · "
         f"Последняя дата операции: {latest_date or 'нет данных'}"
@@ -4144,7 +4272,7 @@ def main() -> None:
         on_change=set_active_tab_from_nav,
     )
     if selected_tab == "Главная":
-        render_home_page(profile, operations, history, plan, report_month, start_date, end_date, latest_date)
+        render_home_page(profile, operations, history, plan, report_month, start_date, end_date, latest_date, allocations=allocations)
     elif selected_tab == "Профиль и загрузка":
         render_profile_and_upload_page(profile, history, operations, start_date, end_date)
         refreshed_operations = operations_df(profile["id"], start_date, end_date)
@@ -4153,9 +4281,9 @@ def main() -> None:
     elif selected_tab == "Очистка":
         render_cleanup_page(profile, operations, history, report_month)
     elif selected_tab == "План":
-        render_simplified_plan_tab(profile, history, report_month)
+        render_simplified_plan_tab(profile, history, report_month, allocations=history_allocations)
     elif selected_tab == "Контроль":
-        render_control_page(profile, operations, history, plan, report_month, start_date, end_date)
+        render_control_page(profile, operations, history, plan, report_month, start_date, end_date, allocations=allocations)
     elif selected_tab == "Правила":
         render_rules_tab(profile, history)
     elif selected_tab == "Диагностика":
