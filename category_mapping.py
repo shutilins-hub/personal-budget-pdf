@@ -59,6 +59,8 @@ INCOME_CATEGORY_MAPPING = {
     "Возврат налога / кешбэк": "Разовые поступления",
     "Прочий личный доход": "Прочий доход",
     "Проверить доход": "Прочий доход",
+    # Compatibility only: these legacy labels are not personal income.
+    # Budget impact must be determined by operation_type.
     "Компенсация расходов": "Прочий доход",
     "Возврат долга": "Прочий доход",
 }

@@ -19,7 +19,7 @@ class BudgetEngineTest(unittest.TestCase):
     def test_dashboard_net_expense_with_compensation(self):
         operations = pd.DataFrame(
             [
-                {"operation_type": "Личный доход", "budget_category": "Зарплата / аванс / премия", "personal_amount": 78300, "needs_review": False},
+                {"operation_type": "Личный доход", "budget_category": "Зарплата", "personal_amount": 78300, "needs_review": False},
                 {"operation_type": "Личный расход", "budget_category": "Жильё", "personal_amount": 65000, "needs_review": False},
                 {"operation_type": "Компенсация совместных расходов", "budget_category": "Жильё", "personal_amount": -15000, "needs_review": False},
             ]
@@ -57,6 +57,47 @@ class BudgetEngineTest(unittest.TestCase):
 
         self.assertEqual(metrics["personal_income"], 0)
         self.assertEqual(metrics["compensation"], -15000)
+
+    def test_loan_return_is_not_personal_income(self):
+        operations = pd.DataFrame(
+            [
+                {"operation_type": "Возврат займа", "budget_category": "Не учитывать", "personal_amount": 0, "needs_review": False},
+            ]
+        )
+
+        metrics = dashboard_metrics(operations)
+        plan = pd.DataFrame(columns=["budget_category", "suggested_plan"])
+
+        self.assertEqual(metrics["personal_income"], 0)
+        self.assertEqual(metrics["net_expense"], 0)
+        self.assertEqual(plan_fact(operations, plan).empty, True)
+
+    def test_lent_money_is_not_personal_expense(self):
+        operations = pd.DataFrame(
+            [
+                {"operation_type": "Заём выдан", "budget_category": "Не учитывать", "personal_amount": 0, "needs_review": False},
+            ]
+        )
+
+        metrics = dashboard_metrics(operations)
+
+        self.assertEqual(metrics["gross_expense"], 0)
+        self.assertEqual(metrics["net_expense"], 0)
+
+    def test_project_turnover_is_outside_personal_budget(self):
+        operations = pd.DataFrame(
+            [
+                {"operation_type": "Проектный оборот", "budget_category": "Не учитывать", "personal_amount": 0, "needs_review": False},
+                {"operation_type": "Проектный приход", "budget_category": "Не учитывать", "personal_amount": 0, "needs_review": False},
+                {"operation_type": "Проектный расход", "budget_category": "Не учитывать", "personal_amount": 0, "needs_review": False},
+            ]
+        )
+
+        metrics = dashboard_metrics(operations)
+
+        self.assertEqual(metrics["personal_income"], 0)
+        self.assertEqual(metrics["gross_expense"], 0)
+        self.assertEqual(metrics["net_expense"], 0)
 
     def test_financial_health_assessment_flags_review_before_status(self):
         metrics = {
