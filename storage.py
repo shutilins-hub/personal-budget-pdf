@@ -234,6 +234,37 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS operation_allocations (
+                id TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                amount REAL NOT NULL,
+                operation_type TEXT NOT NULL,
+                budget_category TEXT,
+                plan_category TEXT,
+                budget_amount REAL DEFAULT 0,
+                planning_amount REAL DEFAULT 0,
+                count_in_budget INTEGER DEFAULT 0,
+                count_in_plan INTEGER DEFAULT 0,
+                comment TEXT,
+                created_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_operation_allocations_operation_id
+            ON operation_allocations(operation_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_operation_allocations_profile_id
+            ON operation_allocations(profile_id)
+            """
+        )
 
 
 def load_json(path: Path, fallback: Any = None) -> Any:
@@ -953,6 +984,7 @@ def latest_operation_date(profile_id: str) -> str | None:
 def delete_profile_operations(profile_id: str) -> int:
     init_db()
     with db_connection() as conn:
+        conn.execute("DELETE FROM operation_allocations WHERE profile_id = ?", [profile_id])
         cursor = conn.execute("DELETE FROM operations WHERE profile_id = ?", [profile_id])
         return cursor.rowcount
 
@@ -960,6 +992,15 @@ def delete_profile_operations(profile_id: str) -> int:
 def delete_profile_source_file_operations(profile_id: str, source_file: str) -> int:
     init_db()
     with db_connection() as conn:
+        conn.execute(
+            """
+            DELETE FROM operation_allocations
+            WHERE operation_id IN (
+                SELECT id FROM operations WHERE profile_id = ? AND source_file = ?
+            )
+            """,
+            [profile_id, source_file],
+        )
         cursor = conn.execute(
             "DELETE FROM operations WHERE profile_id = ? AND source_file = ?",
             [profile_id, source_file],
@@ -1001,6 +1042,232 @@ def update_operation(operation_id: str, updates: dict[str, Any]) -> None:
             f"UPDATE operations SET {assignments} WHERE id = ?",
             [*clean.values(), operation_id],
         )
+
+
+ALLOCATION_CATEGORY_REQUIRED_TYPES = {
+    "Личный расход",
+    "Личный доход",
+    "Компенсация совместных расходов",
+}
+ALLOCATION_NO_CATEGORY_TYPES = {
+    "Внутренний перевод",
+    "Заём выдан",
+    "Возврат займа",
+    "Проектный оборот",
+    "Проектный приход",
+    "Проектный расход",
+    "Не учитывать",
+}
+ALLOCATION_SUPPORTED_TYPES = ALLOCATION_CATEGORY_REQUIRED_TYPES | ALLOCATION_NO_CATEGORY_TYPES
+
+
+def _operation_value(operation: dict[str, Any] | pd.Series, key: str, default: Any = None) -> Any:
+    if isinstance(operation, pd.Series):
+        return operation.get(key, default)
+    return operation.get(key, default)
+
+
+def _operation_bank_amount(operation: dict[str, Any] | pd.Series) -> float:
+    for key in ("bank_amount", "cashflow_amount", "budget_amount", "personal_amount"):
+        value = _operation_value(operation, key)
+        if value not in (None, ""):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def normalize_allocation_budget_effect(allocation: dict[str, Any]) -> dict[str, Any]:
+    operation_type = str(allocation.get("operation_type") or "").strip()
+    amount = abs(float(allocation.get("amount") or 0))
+    budget_category = str(allocation.get("budget_category") or "").strip()
+    normalized = dict(allocation)
+    normalized["amount"] = amount
+    normalized["operation_type"] = operation_type
+    normalized["budget_category"] = budget_category
+
+    if operation_type == "Личный расход":
+        normalized["budget_amount"] = amount
+        normalized["planning_amount"] = amount
+        normalized["count_in_budget"] = True
+        normalized["count_in_plan"] = True
+        normalized["plan_category"] = budget_category
+    elif operation_type == "Личный доход":
+        normalized["budget_amount"] = amount
+        normalized["planning_amount"] = 0.0
+        normalized["count_in_budget"] = True
+        normalized["count_in_plan"] = False
+        normalized["plan_category"] = budget_category
+    elif operation_type == "Компенсация совместных расходов":
+        normalized["budget_amount"] = -amount
+        normalized["planning_amount"] = -amount
+        normalized["count_in_budget"] = True
+        normalized["count_in_plan"] = True
+        normalized["plan_category"] = budget_category
+    elif operation_type in ALLOCATION_NO_CATEGORY_TYPES:
+        normalized["budget_amount"] = 0.0
+        normalized["planning_amount"] = 0.0
+        normalized["count_in_budget"] = False
+        normalized["count_in_plan"] = False
+        normalized["plan_category"] = "Не учитывать"
+    else:
+        normalized.setdefault("budget_amount", 0.0)
+        normalized.setdefault("planning_amount", 0.0)
+        normalized.setdefault("count_in_budget", False)
+        normalized.setdefault("count_in_plan", False)
+        normalized.setdefault("plan_category", budget_category or "Не учитывать")
+    return normalized
+
+
+def validate_operation_allocations(
+    operation: dict[str, Any] | pd.Series,
+    allocations: list[dict[str, Any]],
+) -> tuple[bool, str]:
+    if not allocations:
+        return False, "Нужно добавить хотя бы одну часть операции."
+
+    expected_total = abs(_operation_bank_amount(operation))
+    if expected_total <= 0:
+        return False, "У операции не найдена сумма для проверки split."
+
+    total = 0.0
+    for index, allocation in enumerate(allocations, start=1):
+        try:
+            amount = float(allocation.get("amount") or 0)
+        except (TypeError, ValueError):
+            return False, f"В части {index} указана некорректная сумма."
+        if amount <= 0:
+            return False, f"Сумма части {index} должна быть больше нуля."
+
+        operation_type = str(allocation.get("operation_type") or "").strip()
+        if operation_type not in ALLOCATION_SUPPORTED_TYPES:
+            return False, f"Неподдерживаемый тип части: {operation_type or 'не указан'}."
+        if operation_type in ALLOCATION_CATEGORY_REQUIRED_TYPES and not str(
+            allocation.get("budget_category") or ""
+        ).strip():
+            return False, f"Для типа «{operation_type}» нужно выбрать категорию."
+        total += amount
+
+    if round(abs(total - expected_total), 2) > 0.01:
+        return False, f"Сумма частей {total:.2f} не совпадает с суммой операции {expected_total:.2f}."
+    return True, ""
+
+
+def _fetch_operation_row(conn: sqlite3.Connection, operation_id: str) -> dict[str, Any] | None:
+    cursor = conn.execute("SELECT * FROM operations WHERE id = ?", [operation_id])
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    columns = [description[0] for description in cursor.description]
+    return dict(zip(columns, row))
+
+
+def save_operation_allocations(operation_id: str, profile_id: str, allocations: list[dict[str, Any]]) -> None:
+    init_db()
+    now = datetime.now().isoformat(timespec="seconds")
+    fields = [
+        "id",
+        "operation_id",
+        "profile_id",
+        "amount",
+        "operation_type",
+        "budget_category",
+        "plan_category",
+        "budget_amount",
+        "planning_amount",
+        "count_in_budget",
+        "count_in_plan",
+        "comment",
+        "created_at",
+    ]
+    with db_connection() as conn:
+        operation = _fetch_operation_row(conn, operation_id)
+        if operation is None or operation.get("profile_id") != profile_id:
+            raise ValueError("Операция не найдена в выбранном профиле.")
+        ok, message = validate_operation_allocations(operation, allocations)
+        if not ok:
+            raise ValueError(message)
+
+        conn.execute("DELETE FROM operation_allocations WHERE operation_id = ?", [operation_id])
+        for allocation in allocations:
+            normalized = normalize_allocation_budget_effect(allocation)
+            normalized.setdefault("id", uuid.uuid4().hex)
+            normalized["operation_id"] = operation_id
+            normalized["profile_id"] = profile_id
+            normalized.setdefault("comment", allocation.get("comment", ""))
+            normalized["created_at"] = allocation.get("created_at") or now
+            values = [normalized.get(field) for field in fields]
+            conn.execute(
+                f"INSERT INTO operation_allocations ({','.join(fields)}) VALUES ({','.join(['?'] * len(fields))})",
+                values,
+            )
+
+        conn.execute(
+            """
+            UPDATE operations
+            SET needs_review = 0,
+                confidence = 0.95,
+                classification_source = 'manual_split',
+                operation_type = 'Разделено',
+                budget_category = 'Разделено',
+                personal_amount = 0,
+                budget_amount = 0,
+                planning_amount = 0,
+                count_in_budget = 0,
+                count_in_plan = 0,
+                plan_category = 'Разделено'
+            WHERE id = ? AND profile_id = ?
+            """,
+            [operation_id, profile_id],
+        )
+
+
+def get_operation_allocations(operation_id: str) -> pd.DataFrame:
+    init_db()
+    with db_connection() as conn:
+        return pd.read_sql_query(
+            """
+            SELECT *
+            FROM operation_allocations
+            WHERE operation_id = ?
+            ORDER BY datetime(created_at), id
+            """,
+            conn,
+            params=[operation_id],
+        )
+
+
+def allocations_df(profile_id: str, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
+    init_db()
+    query = """
+        SELECT a.*, o.operation_datetime, o.bank, o.description, o.direction, o.bank_amount
+        FROM operation_allocations a
+        LEFT JOIN operations o ON o.id = a.operation_id
+        WHERE a.profile_id = ?
+    """
+    params: list[Any] = [profile_id]
+    if start_date:
+        start_date = start_date.isoformat() if hasattr(start_date, "isoformat") else str(start_date)
+        query += " AND date(o.operation_datetime) >= date(?)"
+        params.append(start_date)
+    if end_date:
+        end_date = end_date.isoformat() if hasattr(end_date, "isoformat") else str(end_date)
+        query += " AND date(o.operation_datetime) <= date(?)"
+        params.append(end_date)
+    query += " ORDER BY datetime(o.operation_datetime) DESC, datetime(a.created_at) DESC"
+    with db_connection() as conn:
+        return pd.read_sql_query(query, conn, params=params)
+
+
+def has_allocations(operation_id: str) -> bool:
+    init_db()
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM operation_allocations WHERE operation_id = ? LIMIT 1",
+            [operation_id],
+        ).fetchone()
+    return row is not None
 
 
 def append_profile_rule(profile_id: str, rule: dict[str, Any]) -> None:

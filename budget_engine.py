@@ -5,7 +5,64 @@ from datetime import date
 import pandas as pd
 
 
-def dashboard_metrics(operations: pd.DataFrame, monthly_limit: float = 0) -> dict[str, float]:
+def build_budget_rows(operations: pd.DataFrame, allocations: pd.DataFrame | None = None) -> pd.DataFrame:
+    if operations.empty or allocations is None or allocations.empty:
+        return operations.copy()
+    if "id" not in operations.columns or "operation_id" not in allocations.columns:
+        return operations.copy()
+
+    operation_ids_with_allocations = set(allocations["operation_id"].dropna().astype(str))
+    if not operation_ids_with_allocations:
+        return operations.copy()
+
+    base_rows = operations[~operations["id"].astype(str).isin(operation_ids_with_allocations)].copy()
+    allocation_rows = allocations.copy()
+
+    context_columns = [
+        column
+        for column in [
+            "id",
+            "operation_datetime",
+            "bank",
+            "description",
+            "direction",
+            "bank_amount",
+            "source_file",
+            "source_file_name",
+            "account_id",
+            "account_type",
+            "account_role",
+            "document_type",
+        ]
+        if column in operations.columns
+    ]
+    if context_columns:
+        context = operations[context_columns].rename(columns={"id": "operation_id"})
+        allocation_rows = allocation_rows.merge(context, how="left", on="operation_id", suffixes=("", "_operation"))
+
+    allocation_rows["source_operation_id"] = allocation_rows["operation_id"]
+    if "id" in allocation_rows.columns:
+        allocation_rows["allocation_id"] = allocation_rows["id"]
+        allocation_rows["id"] = "allocation_" + allocation_rows["id"].astype(str)
+    else:
+        allocation_rows["id"] = "allocation_" + allocation_rows["operation_id"].astype(str)
+    allocation_rows["personal_amount"] = allocation_rows.get("budget_amount", 0)
+    allocation_rows["needs_review"] = False
+    allocation_rows["classification_source"] = "manual_split"
+
+    all_columns = list(dict.fromkeys([*base_rows.columns.tolist(), *allocation_rows.columns.tolist()]))
+    return pd.concat(
+        [base_rows.reindex(columns=all_columns), allocation_rows.reindex(columns=all_columns)],
+        ignore_index=True,
+    )
+
+
+def dashboard_metrics(
+    operations: pd.DataFrame,
+    monthly_limit: float = 0,
+    allocations: pd.DataFrame | None = None,
+) -> dict[str, float]:
+    operations = build_budget_rows(operations, allocations)
     if operations.empty:
         return {
             "personal_income": 0.0,
@@ -41,7 +98,12 @@ def dashboard_metrics(operations: pd.DataFrame, monthly_limit: float = 0) -> dic
     }
 
 
-def plan_fact(operations: pd.DataFrame, plan: pd.DataFrame) -> pd.DataFrame:
+def plan_fact(
+    operations: pd.DataFrame,
+    plan: pd.DataFrame,
+    allocations: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    operations = build_budget_rows(operations, allocations)
     if operations.empty:
         fact = pd.DataFrame(columns=["budget_category", "fact"])
     else:
@@ -65,7 +127,12 @@ def plan_fact(operations: pd.DataFrame, plan: pd.DataFrame) -> pd.DataFrame:
     return result.sort_values("fact", ascending=False)
 
 
-def income_plan_fact(operations: pd.DataFrame, income_plan: pd.DataFrame) -> pd.DataFrame:
+def income_plan_fact(
+    operations: pd.DataFrame,
+    income_plan: pd.DataFrame,
+    allocations: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    operations = build_budget_rows(operations, allocations)
     if operations.empty:
         fact = pd.DataFrame(columns=["income_category", "fact"])
     else:
