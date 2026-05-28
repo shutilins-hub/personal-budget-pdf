@@ -9,6 +9,9 @@ __pycache__/
 .vscode/
 *.log
 *.tmp
+.env
+.env.*
+!deploy/.env.example
 
 data/
 exports/

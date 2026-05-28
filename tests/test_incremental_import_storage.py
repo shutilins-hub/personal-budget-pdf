@@ -166,8 +166,11 @@ class IncrementalImportStorageTest(unittest.TestCase):
 
     def test_sqlite_uses_unique_duplicate_key_index(self) -> None:
         with temporary_storage_db() as db_path:
-            with sqlite3.connect(db_path) as conn:
+            conn = sqlite3.connect(db_path)
+            try:
                 indexes = {row[1]: row[2] for row in conn.execute("PRAGMA index_list(operations)").fetchall()}
+            finally:
+                conn.close()
 
         self.assertIn("idx_operations_duplicate_key", indexes)
         self.assertEqual(indexes["idx_operations_duplicate_key"], 1)

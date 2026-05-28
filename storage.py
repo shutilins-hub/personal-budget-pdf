@@ -4,15 +4,18 @@ import json
 import re
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from app_config import get_app_config
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+_APP_CONFIG = get_app_config()
+DATA_DIR = _APP_CONFIG.data_dir
 PROFILES_DIR = DATA_DIR / "profiles"
 CONFIG_DIR = BASE_DIR / "config"
 DB_PATH = DATA_DIR / "budget.sqlite3"
@@ -77,9 +80,22 @@ def ensure_dirs() -> None:
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
 
+@contextmanager
+def db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def init_db() -> None:
     ensure_dirs()
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS operations (
@@ -662,7 +678,7 @@ def create_import_batch(
     init_db()
     batch_id = uuid.uuid4().hex
     now = datetime.now().isoformat(timespec="seconds")
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         conn.execute(
             """
             INSERT INTO import_batches (
@@ -717,13 +733,13 @@ def update_import_batch(batch_id: str, updates: dict[str, Any]) -> None:
         return
     assignments = ", ".join(f"{key} = ?" for key in clean)
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         conn.execute(f"UPDATE import_batches SET {assignments} WHERE id = ?", [*clean.values(), batch_id])
 
 
 def import_batches_df(profile_id: str) -> pd.DataFrame:
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         return pd.read_sql_query(
             """
             SELECT *
@@ -738,7 +754,7 @@ def import_batches_df(profile_id: str) -> pd.DataFrame:
 
 def get_account_import_status(profile_id: str, bank: str, account_id: str = "") -> dict[str, Any]:
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         op_row = conn.execute(
             """
             SELECT min(operation_datetime), max(operation_datetime), count(*), count(DISTINCT source_file)
@@ -818,7 +834,7 @@ def insert_operations_with_stats(operations: list[dict[str, Any]], import_batch_
         "expense_nature",
         "created_at",
     ]
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         for operation in operations:
             if is_service_description(operation.get("description", "")):
                 stats["filtered"] += 1
@@ -885,7 +901,7 @@ def operations_df(profile_id: str, start_date: str | None = None, end_date: str 
         query += " AND date(operation_datetime) <= date(?)"
         params.append(end_date)
     query += " ORDER BY datetime(operation_datetime) DESC, created_at DESC"
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         df = pd.read_sql_query(query, conn, params=params)
     if not df.empty:
         df["needs_review"] = df["needs_review"].astype(bool)
@@ -906,7 +922,7 @@ def operations_df(profile_id: str, start_date: str | None = None, end_date: str 
 
 def available_months(profile_id: str) -> list[str]:
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         rows = conn.execute(
             """
             SELECT DISTINCT strftime('%Y-%m', operation_datetime) AS month
@@ -926,7 +942,7 @@ def latest_month_with_operations(profile_id: str) -> str | None:
 
 def latest_operation_date(profile_id: str) -> str | None:
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         row = conn.execute(
             "SELECT max(date(operation_datetime)) FROM operations WHERE profile_id = ?",
             [profile_id],
@@ -936,14 +952,14 @@ def latest_operation_date(profile_id: str) -> str | None:
 
 def delete_profile_operations(profile_id: str) -> int:
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         cursor = conn.execute("DELETE FROM operations WHERE profile_id = ?", [profile_id])
         return cursor.rowcount
 
 
 def delete_profile_source_file_operations(profile_id: str, source_file: str) -> int:
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         cursor = conn.execute(
             "DELETE FROM operations WHERE profile_id = ? AND source_file = ?",
             [profile_id, source_file],
@@ -980,7 +996,7 @@ def update_operation(operation_id: str, updates: dict[str, Any]) -> None:
     if not clean:
         return
     assignments = ", ".join(f"{key} = ?" for key in clean)
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
         conn.execute(
             f"UPDATE operations SET {assignments} WHERE id = ?",
             [*clean.values(), operation_id],

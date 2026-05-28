@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 import storage
+from app_config import get_app_config, upload_within_limit, verify_password
 from bank_adapters import detect_document_type, link_internal_transfers, parse_by_document_type
 from budget_engine import dashboard_metrics, financial_health_assessment, income_plan_fact, plan_fact
 from classifier import build_rule_from_operation, classify_operations, rule_matches
@@ -252,6 +253,29 @@ def set_active_tab_from_nav() -> None:
     selected = st.session_state.get("nav_selected_tab")
     if selected:
         navigate_to(selected)
+
+
+def render_auth_gate() -> bool:
+    config = get_app_config(validate=True)
+    if not config.auth_enabled:
+        return True
+    if st.session_state.get("app_authenticated"):
+        st.sidebar.caption(f"Вход: {config.username}")
+        if st.sidebar.button("Выйти", use_container_width=True):
+            st.session_state.pop("app_authenticated", None)
+            st.rerun()
+        return True
+
+    st.markdown("### Закрытый вход")
+    st.caption("Временная авторизация для закрытого теста. Включается через APP_AUTH_ENABLED=1.")
+    username = st.text_input("Логин", value="", key="auth_username")
+    password = st.text_input("Пароль", value="", type="password", key="auth_password")
+    if st.button("Войти", type="primary", key="auth_login"):
+        if username == config.username and verify_password(password, config):
+            st.session_state["app_authenticated"] = True
+            st.rerun()
+        st.error("Неверный логин или пароль.")
+    return False
 
 
 def determine_user_next_step(history: pd.DataFrame, operations: pd.DataFrame, profile: dict) -> str:
@@ -540,6 +564,25 @@ def apply_account_context(operations: list[dict], metadata: dict) -> list[dict]:
     return operations
 
 
+def filter_uploads_by_size(uploaded_files: list) -> tuple[list, list[dict]]:
+    allowed = []
+    rejected = []
+    config = get_app_config()
+    for uploaded_file in uploaded_files or []:
+        ok, size_bytes, limit_bytes = upload_within_limit(uploaded_file, config)
+        if ok:
+            allowed.append(uploaded_file)
+        else:
+            rejected.append(
+                {
+                    "name": sanitize_text(getattr(uploaded_file, "name", "uploaded.pdf")),
+                    "size_mb": size_bytes / (1024 * 1024),
+                    "limit_mb": limit_bytes / (1024 * 1024),
+                }
+            )
+    return allowed, rejected
+
+
 def import_pdfs(profile: dict, uploaded_files: list, start_date: date, end_date: date, metadata_by_file: dict[str, dict] | None = None) -> dict:
     all_text_parts = []
     all_parsed = []
@@ -551,6 +594,7 @@ def import_pdfs(profile: dict, uploaded_files: list, start_date: date, end_date:
     document_detections = []
     account_metadata_debug = []
     metadata_by_file = metadata_by_file or {}
+    uploaded_files, rejected_files = filter_uploads_by_size(uploaded_files)
     for uploaded_file in uploaded_files:
         source_file = sanitize_text(getattr(uploaded_file, "name", "uploaded.pdf"))
         metadata = metadata_by_file.get(source_file, {"source_file": source_file, "account_type": "unknown", "account_name": source_file})
@@ -666,6 +710,7 @@ def import_pdfs(profile: dict, uploaded_files: list, start_date: date, end_date:
     parsed_df = pd.DataFrame(all_parsed)
     summary = {
         "files_uploaded": len(uploaded_files),
+        "files_rejected": rejected_files,
         "files": file_summaries,
         "parsed_operations": len(all_parsed),
         "saved_operations": total_inserted,
@@ -690,6 +735,11 @@ def import_pdfs(profile: dict, uploaded_files: list, start_date: date, end_date:
 
 def show_import_diagnostics(summary: dict) -> None:
     st.success(f"Импортировано операций: {summary['saved_operations']}. На проверку: {summary['needs_review']}.")
+    for rejected in summary.get("files_rejected", []):
+        st.warning(
+            f"Файл “{rejected['name']}” слишком большой. "
+            f"Максимальный размер: {rejected['limit_mb']:.0f} МБ."
+        )
     cols = st.columns(4)
     cols[0].metric("Файлов загружено", summary["files_uploaded"])
     cols[1].metric("Найдено парсером", summary["parsed_operations"])
@@ -751,6 +801,12 @@ def upload_pdf(profile: dict, start_date: date, end_date: date) -> None:
         type=["pdf"],
         accept_multiple_files=True,
     )
+    uploaded_files, rejected_files = filter_uploads_by_size(uploaded_files or [])
+    for rejected in rejected_files:
+        st.warning(
+            f"Файл “{rejected['name']}” слишком большой. "
+            f"Максимальный размер: {rejected['limit_mb']:.0f} МБ."
+        )
     uploaded_names = [getattr(file, "name", "uploaded.pdf") for file in uploaded_files or []]
     if st.session_state.get("uploaded_names") != uploaded_names:
         st.session_state["uploaded_names"] = uploaded_names
@@ -3863,6 +3919,11 @@ def render_diagnostics_tab(operations: pd.DataFrame) -> None:
 
 
 def main() -> None:
+    try:
+        get_app_config(validate=True)
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
     init_db()
     apply_app_style()
     st.markdown(
@@ -3874,6 +3935,8 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
+    if not render_auth_gate():
+        return
     profile = profile_selector()
     compact_new_profile_form()
     report_month, start_date, end_date = period_picker(profile["id"])

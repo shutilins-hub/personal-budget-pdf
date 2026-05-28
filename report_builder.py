@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from app_config import get_app_config
 from debug_exports import (
     debug_exports_enabled,
     sanitize_dataframe,
@@ -14,7 +15,7 @@ from debug_exports import (
 )
 
 
-EXPORTS_DIR = Path(__file__).resolve().parent / "exports"
+EXPORTS_DIR = get_app_config().exports_dir
 
 
 def export_operations_csv(operations: pd.DataFrame, profile_id: str) -> Path:

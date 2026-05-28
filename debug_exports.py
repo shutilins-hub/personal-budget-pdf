@@ -1,24 +1,23 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from app_config import debug_exports_enabled as config_debug_exports_enabled, get_app_config
 from privacy import sanitize_text
 
 
-EXPORTS_DIR = Path(__file__).resolve().parent / "exports"
+EXPORTS_DIR = get_app_config().exports_dir
 DEBUG_EXPORTS_ENV = "BUDGET_DEBUG_EXPORTS"
 DEBUG_TEXT_MAX_CHARS = 12000
 DEBUG_LIST_MAX_ITEMS = 1000
 
 
 def debug_exports_enabled() -> bool:
-    value = os.getenv(DEBUG_EXPORTS_ENV, "")
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return config_debug_exports_enabled()
 
 
 def ensure_debug_exports_dir() -> Path:
