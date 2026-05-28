@@ -15,7 +15,6 @@ class SovcombankAdapterTest(unittest.TestCase):
         )
         ops = parse_sovcombank_halva(text, {"profile_id": "p", "source_file": "h.pdf"})
         self.assertEqual(len(ops), 3)
-        self.assertEqual(ops[0]["budget_category"], "Продукты / супермаркеты")
+        self.assertEqual(ops[0]["budget_category"], "Продукты")
         self.assertEqual(ops[1]["operation_type"], "debt_repayment")
         self.assertEqual(ops[2]["budget_category"], "Кредиты / проценты / комиссии")
-

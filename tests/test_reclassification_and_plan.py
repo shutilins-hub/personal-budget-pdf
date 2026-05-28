@@ -138,7 +138,7 @@ class ReclassificationAndPlanTest(unittest.TestCase):
         self.assertGreater(stats["changed"], 0)
         self.assertEqual(housing_fact, 50000)
         self.assertEqual(plan_by_category["Жильё"], 50000)
-        self.assertEqual(plan_by_category["Продукты / супермаркеты"], 10000)
+        self.assertEqual(plan_by_category["Продукты"], 10000)
         self.assertTrue((margarita["count_in_plan"] == False).all())
         self.assertTrue((internal["count_in_plan"] == False).all())
         self.assertGreaterEqual(sum(plan_by_category.values()), 60000)

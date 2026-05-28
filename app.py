@@ -13,9 +13,11 @@ import storage
 from app_config import get_app_config, upload_within_limit, verify_password
 from bank_adapters import detect_document_type, link_internal_transfers, parse_by_document_type
 from budget_engine import dashboard_metrics, financial_health_assessment, income_plan_fact, plan_fact
+from category_mapping import EXPENSE_CATEGORIES, INCOME_CATEGORIES
 from classifier import build_rule_from_operation, classify_operations, rule_matches
 from debug_exports import debug_exports_enabled
 from financial_health import build_financial_health_report
+from operation_labels import EXPENSE_OPERATION_LABELS, INCOME_OPERATION_LABELS
 from pdf_parser import detect_bank, extract_text_from_uploaded_pdf, parse_text
 from privacy import sanitize_text
 from planner import build_auto_expense_plan, build_auto_income_plan, build_auto_plan
@@ -123,40 +125,11 @@ def make_widget_key(prefix: str, *parts) -> str:
 
 
 FALLBACK_EXPENSE_PLAN_CATEGORIES = [
-    "Жильё",
-    "Продукты / супермаркеты",
-    "Кафе / доставка / рестораны",
-    "Транспорт",
-    "Такси",
-    "Авто / каршеринг",
-    "Связь / интернет / подписки",
-    "Здоровье / аптеки",
-    "Психолог / терапия",
-    "Красота / уход",
-    "Маркетплейсы",
-    "Дом / ремонт / бытовое",
-    "Дом / одежда / бытовое",
-    "Одежда",
-    "Обучение",
-    "Развлечения",
-    "Подарки / семья",
-    "Путешествия",
-    "Документы / визы",
-    "Крупная медицина / стоматология",
-    "Кредиты / проценты / комиссии",
-    "Наличные / проверить",
-    "Переводы, которые нужно уточнить",
-    "Прочее / проверить",
+    *EXPENSE_CATEGORIES,
 ]
 
 FALLBACK_INCOME_CATEGORIES = [
-    "Зарплата / аванс / премия",
-    "Доп. доход / проекты",
-    "Продажа сайтов",
-    "Возврат налога / кешбэк",
-    "Социальные выплаты",
-    "Прочий личный доход",
-    "Проверить доход",
+    *INCOME_CATEGORIES,
 ]
 
 
@@ -1003,7 +976,7 @@ def ignore_category_operation(row: pd.Series) -> None:
 
 
 def render_category_operation_actions(row: pd.Series, profile: dict, category: str, key_prefix: str) -> None:
-    action_options = ["Действие", "Изменить категорию", "Проектный оборот", "Перевод самому себе", "Создать правило для похожих", "Не учитывать эту операцию", "Перейти к проверке"]
+    action_options = ["Действие", "Изменить категорию", "Оборотные средства", "Перевод себе", "Создать правило для похожих", "Не учитывать эту операцию", "Перейти к проверке"]
     if category in {"Прочее / проверить", "Неразобранные переводы / проверить", "Переводы, которые нужно уточнить"}:
         action_options = ["Разобрать", *action_options[1:]]
     action = st.selectbox(
@@ -1024,7 +997,7 @@ def render_category_operation_actions(row: pd.Series, profile: dict, category: s
         )
         if st.button("Сохранить", key=make_widget_key(key_prefix, "save_category", row["id"])):
             update_category_operation(row, "Личный расход", selected_category, create_rule, profile)
-    elif action == "Проектный оборот":
+    elif action == "Оборотные средства":
         create_rule = st.checkbox(
             "Применить к похожим операциям",
             key=make_widget_key(key_prefix, "project_rule", row["id"]),
@@ -1033,7 +1006,7 @@ def render_category_operation_actions(row: pd.Series, profile: dict, category: s
         st.caption("Операция не будет считаться личным расходом и не попадёт в план месяца.")
         if st.button("Сохранить как проектный оборот", key=make_widget_key(key_prefix, "save_project", row["id"])):
             update_category_operation(row, "Проектный оборот", "Не учитывать", create_rule, profile)
-    elif action == "Перевод самому себе":
+    elif action == "Перевод себе":
         create_rule = st.checkbox(
             "Применить к похожим операциям",
             key=make_widget_key(key_prefix, "internal_rule", row["id"]),
@@ -1752,54 +1725,39 @@ def reassignment_options_for_row(row: pd.Series) -> tuple[str, list[str], str]:
         default = default_income_cleanup_scenario(row)
         return (
             "Что это за поступление?",
-            [
-                "Личный доход",
-                "Компенсация расходов",
-                "Мне вернули долг",
-                "Я занял деньги",
-                "Перевод между своими счетами",
-                "Проектный оборот",
-                "Не учитывать",
-            ],
+            INCOME_OPERATION_LABELS,
             default,
         )
     return (
         "Что это за списание?",
-        [
-            "Личный расход",
-            "Проектный оборот",
-            "Перевод между своими счетами",
-            "Я дал в долг",
-            "Я вернул долг",
-            "Не учитывать",
-        ],
-        "Личный расход",
+        EXPENSE_OPERATION_LABELS,
+        "Расход",
     )
 
 
 def operation_update_from_reassignment(row: pd.Series, scenario: str, category: str) -> tuple[str, str, float, dict]:
     amount = abs(float(row.get("bank_amount") or row.get("budget_amount") or row.get("personal_amount") or 0))
-    if scenario == "Личный доход":
+    if scenario in {"Доход", "Личный доход"}:
         operation_type = "Личный доход"
         final_category = category
         personal_amount = amount
-    elif scenario == "Компенсация расходов":
+    elif scenario in {"Компенсация", "Компенсация расходов"}:
         operation_type = "Компенсация совместных расходов"
         final_category = category
         personal_amount = -amount
-    elif scenario in {"Обычный расход", "Личный расход"}:
+    elif scenario in {"Обычный расход", "Расход", "Личный расход"}:
         operation_type = "Личный расход"
         final_category = category
         personal_amount = amount
-    elif scenario == "Проектный оборот":
+    elif scenario in {"Оборотные средства для проекта / работы", "Проектный оборот"}:
         operation_type = "Проектный оборот"
         final_category = "Не учитывать"
         personal_amount = 0.0
-    elif scenario == "Перевод между своими счетами":
+    elif scenario in {"Перевод себе", "Перевод между своими счетами"}:
         operation_type = "Внутренний перевод"
         final_category = "Не учитывать"
         personal_amount = 0.0
-    elif scenario == "Мне вернули долг":
+    elif scenario in {"Вернули долг", "Мне вернули долг"}:
         operation_type = "Возврат займа"
         final_category = "Не учитывать"
         personal_amount = 0.0
@@ -1807,7 +1765,7 @@ def operation_update_from_reassignment(row: pd.Series, scenario: str, category: 
         operation_type = "Заём получен"
         final_category = "Не учитывать"
         personal_amount = 0.0
-    elif scenario == "Я дал в долг":
+    elif scenario in {"Деньги в долг", "Я дал в долг"}:
         operation_type = "Заём выдан"
         final_category = "Не учитывать"
         personal_amount = 0.0
@@ -1882,13 +1840,13 @@ def render_operation_reassignment_section(profile: dict, operations: pd.DataFram
     row = editable[editable["id"].astype(str) == str(selected_id)].iloc[0]
     question, scenarios, default_scenario = reassignment_options_for_row(row)
     scenario = st.selectbox(question, scenarios, index=scenarios.index(default_scenario), key=make_widget_key("reassign_scenario", profile["id"], selected_id))
-    if scenario in {"Обычный расход", "Личный расход", "Компенсация расходов"}:
+    if scenario in {"Обычный расход", "Расход", "Личный расход", "Компенсация", "Компенсация расходов"}:
         category = st.selectbox(
             "Категория расхода",
             expense_categories(profile),
             key=make_widget_key("reassign_expense_category", profile["id"], selected_id, scenario),
         )
-    elif scenario == "Личный доход":
+    elif scenario in {"Доход", "Личный доход"}:
         category = st.selectbox(
             "Категория дохода",
             income_categories(profile),
@@ -1897,7 +1855,7 @@ def render_operation_reassignment_section(profile: dict, operations: pd.DataFram
     else:
         category = "Не учитывать"
         st.caption("Эта операция не будет считаться личным доходом, расходом или частью плана.")
-    if scenario == "Компенсация расходов":
+    if scenario in {"Компенсация", "Компенсация расходов"}:
         st.caption("Компенсация не считается доходом. Она уменьшает расход выбранной категории.")
     remember_choice = st.radio(
         "Запомнить для похожих операций?",
@@ -2182,27 +2140,27 @@ def render_quick_buttons(row: pd.Series, categories: list[str], prefix: str, sel
     if row["direction"] == "income":
         cols = st.columns(6)
         if cols[0].button("Это доход", key=f"{prefix}_quick_income_{row['id']}"):
-            quick_update_operation(row, "Личный доход", "Прочий личный доход", bank_abs)
+            quick_update_operation(row, "Личный доход", "Прочий доход", bank_abs)
         if cols[1].button("Компенсация", key=f"{prefix}_quick_comp_{row['id']}"):
             quick_update_operation(row, "Компенсация совместных расходов", default_category, -bank_abs)
-        if cols[2].button("Возврат долга", key=f"{prefix}_quick_debt_{row['id']}"):
+        if cols[2].button("Вернули долг", key=f"{prefix}_quick_debt_{row['id']}"):
             quick_update_operation(row, "Возврат займа", default_category, 0.0)
-        if cols[3].button("Перевод самому себе", key=f"{prefix}_quick_transfer_{row['id']}"):
+        if cols[3].button("Перевод себе", key=f"{prefix}_quick_transfer_{row['id']}"):
             quick_update_operation(row, "Внутренний перевод", "", 0.0)
-        if cols[4].button("Проектный приход", key=f"{prefix}_quick_project_{row['id']}"):
-            quick_update_operation(row, "Проектный приход", "", 0.0)
+        if cols[4].button("Оборотные средства", key=f"{prefix}_quick_project_{row['id']}"):
+            quick_update_operation(row, "Проектный оборот", "", 0.0)
         if cols[5].button("Не учитывать", key=f"{prefix}_quick_ignore_{row['id']}"):
             quick_update_operation(row, "Не учитывать", "", 0.0)
     else:
         cols = st.columns(5)
         if cols[0].button("Это расход", key=f"{prefix}_quick_expense_{row['id']}"):
             quick_update_operation(row, "Личный расход", default_category, bank_abs)
-        if cols[1].button("Перевод самому себе", key=f"{prefix}_quick_transfer_{row['id']}"):
+        if cols[1].button("Перевод себе", key=f"{prefix}_quick_transfer_{row['id']}"):
             quick_update_operation(row, "Внутренний перевод", "", 0.0)
-        if cols[2].button("Долг / заём", key=f"{prefix}_quick_debt_{row['id']}"):
+        if cols[2].button("Деньги в долг", key=f"{prefix}_quick_debt_{row['id']}"):
             quick_update_operation(row, "Заём выдан", default_category, 0.0)
-        if cols[3].button("Проектный расход", key=f"{prefix}_quick_project_{row['id']}"):
-            quick_update_operation(row, "Проектный расход", "", 0.0)
+        if cols[3].button("Оборотные средства", key=f"{prefix}_quick_project_{row['id']}"):
+            quick_update_operation(row, "Проектный оборот", "", 0.0)
         if cols[4].button("Не учитывать", key=f"{prefix}_quick_ignore_{row['id']}"):
             quick_update_operation(row, "Не учитывать", "", 0.0)
 
@@ -2274,7 +2232,7 @@ def render_review_rows(profile: dict, review: pd.DataFrame, mode: str, key_prefi
             render_quick_buttons(row, expense_categories(profile), row_key, row.get("budget_category", "Прочее / проверить"))
             st.divider()
             if row["direction"] == "income":
-                scenarios = ["Личный доход", "Компенсация расходов", "Возврат долга", "Перевод самому себе", "Проектный приход", "Не учитывать", "Другое / расширенная настройка"]
+                scenarios = ["Доход", "Компенсация", "Вернули долг", "Перевод себе", "Оборотные средства для проекта / работы", "Не учитывать", "Другое / расширенная настройка"]
                 default_scenario = default_income_cleanup_scenario(row)
                 scenario = st.selectbox(
                     "Что это за поступление?",
@@ -2282,29 +2240,29 @@ def render_review_rows(profile: dict, review: pd.DataFrame, mode: str, key_prefi
                     index=scenarios.index(default_scenario) if default_scenario in scenarios else 0,
                     key=make_widget_key(row_key, "type"),
                 )
-                if scenario == "Личный доход":
+                if scenario == "Доход":
                     operation_type = "Личный доход"
                     category_options = income_categories(profile)
                     category_label = "Категория дохода"
                     amount_value = abs(float(row["bank_amount"] or 0))
-                elif scenario == "Компенсация расходов":
+                elif scenario == "Компенсация":
                     operation_type = "Компенсация совместных расходов"
                     category_options = expense_categories(profile)
                     category_label = "Какую категорию уменьшает?"
                     amount_value = -abs(float(row["bank_amount"] or 0))
                     st.caption("Компенсация не считается доходом. Она уменьшает расход выбранной категории.")
-                elif scenario == "Возврат долга":
+                elif scenario == "Вернули долг":
                     operation_type = "Возврат займа"
                     category_options = ["Не учитывать"]
                     category_label = "Категория"
                     amount_value = 0.0
-                elif scenario == "Проектный приход":
-                    operation_type = "Проектный приход"
+                elif scenario == "Оборотные средства для проекта / работы":
+                    operation_type = "Проектный оборот"
                     category_options = ["Не учитывать"]
                     category_label = "Категория"
                     amount_value = 0.0
-                elif scenario in {"Перевод самому себе", "Не учитывать"}:
-                    operation_type = "Внутренний перевод" if scenario == "Перевод самому себе" else "Не учитывать"
+                elif scenario in {"Перевод себе", "Не учитывать"}:
+                    operation_type = "Внутренний перевод" if scenario == "Перевод себе" else "Не учитывать"
                     category_options = ["Не учитывать"]
                     category_label = "Категория"
                     amount_value = 0.0
@@ -2314,25 +2272,25 @@ def render_review_rows(profile: dict, review: pd.DataFrame, mode: str, key_prefi
                     category_label = "Категория"
                     amount_value = default_personal_amount(operation_type, row["bank_amount"], row["personal_amount"])
             else:
-                scenarios = ["Личный расход", "Перевод самому себе", "Долг / заём", "Проектный расход", "Не учитывать", "Другое / расширенная настройка"]
+                scenarios = [*EXPENSE_OPERATION_LABELS, "Другое / расширенная настройка"]
                 scenario = st.selectbox("Что это за списание?", scenarios, key=make_widget_key(row_key, "type"))
-                if scenario == "Личный расход":
+                if scenario == "Расход":
                     operation_type = "Личный расход"
                     category_options = expense_categories(profile)
                     category_label = "Категория расхода"
                     amount_value = abs(float(row["bank_amount"] or 0))
-                elif scenario == "Долг / заём":
+                elif scenario == "Деньги в долг":
                     operation_type = "Заём выдан"
                     category_options = ["Не учитывать"]
                     category_label = "Категория"
                     amount_value = 0.0
-                elif scenario == "Проектный расход":
-                    operation_type = "Проектный расход"
+                elif scenario == "Оборотные средства для проекта / работы":
+                    operation_type = "Проектный оборот"
                     category_options = ["Не учитывать"]
                     category_label = "Категория"
                     amount_value = 0.0
-                elif scenario in {"Перевод самому себе", "Не учитывать"}:
-                    operation_type = "Внутренний перевод" if scenario == "Перевод самому себе" else "Не учитывать"
+                elif scenario in {"Перевод себе", "Не учитывать"}:
+                    operation_type = "Внутренний перевод" if scenario == "Перевод себе" else "Не учитывать"
                     category_options = ["Не учитывать"]
                     category_label = "Категория"
                     amount_value = 0.0
@@ -2832,7 +2790,19 @@ def rule_scope_label(scope: str) -> str:
 
 def rule_summary(anchor: str, scenario: str, category: str, rule_scope: str, plan_behavior: str, report_month: str | None) -> str:
     month_text = month_label(report_month) if report_month else "выбранном месяце"
-    if scenario in {"Перевод между своими счетами", "Проектный оборот", "Не учитывать", "Я дал в долг", "Я вернул долг", "Мне вернули долг", "Я занял деньги"}:
+    if scenario in {
+        "Перевод между своими счетами",
+        "Перевод себе",
+        "Проектный оборот",
+        "Оборотные средства для проекта / работы",
+        "Не учитывать",
+        "Я дал в долг",
+        "Деньги в долг",
+        "Я вернул долг",
+        "Мне вернули долг",
+        "Вернули долг",
+        "Я занял деньги",
+    }:
         return "Эти операции не попадут в личные доходы, расходы и постоянный план."
     if scenario == "Компенсация расходов":
         scope_text = "этот перевод" if rule_scope == "single_operation" else f"похожие переводы от {anchor}"
@@ -2937,40 +2907,30 @@ def render_candidate_rule_form(
     if direction_kind == "expense":
         scenario = st.radio(
             "Что это за списание?",
-            [
-                "Личный расход",
-                "Совместная покупка",
-                "Подарок",
-                "Я дал в долг",
-                "Я вернул долг",
-                "Перевод между своими счетами",
-                "Проектный оборот",
-                "Не учитывать",
-                "Другое",
-            ],
+            [*EXPENSE_OPERATION_LABELS, "Другое"],
             key=make_widget_key(prefix, "scenario"),
         )
         category = "Прочее / проверить"
         custom = None
         st.markdown("**Шаг 2. Куда отнести?**")
-        if scenario == "Личный расход":
+        if scenario == "Расход":
             category = st.selectbox("Категория расхода", expense_categories(profile), key=make_widget_key(prefix, "expense_category"))
         elif scenario == "Совместная покупка":
-            shared_categories = ["Жильё", "Продукты / супермаркеты", "Кафе / доставка / рестораны", "Документы / визы", "Путешествия", "Здоровье / аптеки", "Подарки / семья", "Прочее / проверить"]
+            shared_categories = ["Жильё", "Продукты", "Кафе и доставка", "Документы и обязательные платежи", "Путешествия", "Здоровье", "Семья и подарки", "Прочее / проверить"]
             category = st.selectbox("Категория расхода", [item for item in shared_categories if item in expense_categories(profile)] or shared_categories, key=make_widget_key(prefix, "shared_category"))
             st.caption("Если позже придёт компенсация, она уменьшит эту категорию.")
         elif scenario == "Подарок":
-            category = "Подарки / семья" if "Подарки / семья" in expense_categories(profile) else expense_categories(profile)[0]
+            category = "Семья и подарки" if "Семья и подарки" in expense_categories(profile) else expense_categories(profile)[0]
             st.caption(f"Категория: {category}. Подарок попадёт в факт месяца, но не станет постоянной статьёй плана.")
-        elif scenario == "Перевод между своими счетами":
+        elif scenario == "Перевод себе":
             st.caption("Эти операции не будут считаться расходом или доходом.")
-        elif scenario == "Проектный оборот":
+        elif scenario == "Оборотные средства для проекта / работы":
             st.caption("Операции будут исключены из личного бюджета.")
-        elif scenario in {"Я дал в долг", "Я вернул долг"}:
+        elif scenario == "Деньги в долг":
             st.caption("Долги пока не входят в личный бюджет и постоянный план.")
         plan_behavior_options = ["Учитывать только в этом месяце", "Учитывать как постоянную статью", "Не учитывать в плане"]
         default_behavior = default_plan_behavior_for_candidate(selected, scenario)
-        if scenario in {"Подарок", "Я дал в долг", "Я вернул долг", "Перевод между своими счетами", "Проектный оборот", "Не учитывать"}:
+        if scenario in {"Подарок", "Деньги в долг", "Перевод себе", "Оборотные средства для проекта / работы", "Не учитывать"}:
             default_behavior = "Не учитывать в плане"
         plan_behavior = st.selectbox(
             "Как учитывать в плане?",
@@ -3000,20 +2960,18 @@ def render_candidate_rule_form(
             format_func=rule_scope_label,
             key=make_widget_key(prefix, "scope"),
         )
-        if scenario == "Личный расход":
+        if scenario == "Расход":
             build_scenario = "Регулярный расход" if plan_behavior == "Учитывать как постоянную статью" else "Добавить в план только вручную"
             rule = build_plan_rule_from_scenario(anchor, selected["direction"], build_scenario, category, custom)
         elif scenario == "Совместная покупка":
             rule = build_plan_rule_from_scenario(anchor, selected["direction"], "Добавить в план только вручную", category, custom)
         elif scenario == "Подарок":
             rule = build_plan_rule_from_scenario(anchor, selected["direction"], "Добавить в план только вручную", category, custom)
-        elif scenario == "Я дал в долг":
+        elif scenario == "Деньги в долг":
             rule = build_plan_rule_from_scenario(anchor, selected["direction"], "Долг / заём", category, {"debt_type": "Заём выдан"})
-        elif scenario == "Я вернул долг":
-            rule = build_plan_rule_from_scenario(anchor, selected["direction"], "Долг / заём", category, {"debt_type": "Возврат займа"})
-        elif scenario == "Перевод между своими счетами":
+        elif scenario == "Перевод себе":
             rule = build_plan_rule_from_scenario(anchor, selected["direction"], "Перевод между своими счетами", "Не учитывать")
-        elif scenario == "Проектный оборот":
+        elif scenario == "Оборотные средства для проекта / работы":
             rule = build_plan_rule_from_scenario(anchor, selected["direction"], "Проектный оборот", "Не учитывать")
         elif scenario == "Не учитывать":
             rule = build_plan_rule_from_scenario(anchor, selected["direction"], "Не учитывать в плане", "Не учитывать")
@@ -3024,55 +2982,28 @@ def render_candidate_rule_form(
         default_scenario = default_income_cleanup_scenario(selected)
         scenario = st.radio(
             "Что это за поступление?",
-            [
-                "Личный доход",
-                "Компенсация расходов",
-                "Мне вернули долг",
-                "Я занял деньги",
-                "Перевод между своими счетами",
-                "Проектный оборот",
-                "Не учитывать",
-                "Другое",
-            ],
-            index=[
-                "Личный доход",
-                "Компенсация расходов",
-                "Мне вернули долг",
-                "Я занял деньги",
-                "Перевод между своими счетами",
-                "Проектный оборот",
-                "Не учитывать",
-                "Другое",
-            ].index(default_scenario) if default_scenario in {
-                "Личный доход",
-                "Компенсация расходов",
-                "Мне вернули долг",
-                "Я занял деньги",
-                "Перевод между своими счетами",
-                "Проектный оборот",
-                "Не учитывать",
-                "Другое",
-            } else 1,
+            [*INCOME_OPERATION_LABELS, "Другое"],
+            index=([*INCOME_OPERATION_LABELS, "Другое"].index(default_scenario) if default_scenario in [*INCOME_OPERATION_LABELS, "Другое"] else 1),
             key=make_widget_key(prefix, "scenario"),
         )
-        category = "Прочий личный доход"
+        category = "Прочий доход"
         custom = None
         st.markdown("**Шаг 2. Куда отнести?**")
-        if scenario == "Личный доход":
+        if scenario == "Доход":
             income_options = income_categories(profile)
-            default_income_category = "Зарплата / аванс / премия" if default_scenario == "Личный доход" else "Прочий личный доход"
+            default_income_category = "Зарплата" if default_scenario == "Доход" else "Прочий доход"
             category = st.selectbox(
                 "Категория дохода",
                 income_options,
                 index=income_options.index(default_income_category) if default_income_category in income_options else 0,
                 key=make_widget_key(prefix, "income_category"),
             )
-        elif scenario == "Компенсация расходов":
-            shared_categories = ["Жильё", "Продукты / супермаркеты", "Кафе / доставка / рестораны", "Документы / визы", "Путешествия", "Здоровье / аптеки", "Подарки / семья", "Прочее / проверить"]
+        elif scenario == "Компенсация":
+            shared_categories = ["Жильё", "Продукты", "Кафе и доставка", "Документы и обязательные платежи", "Путешествия", "Здоровье", "Семья и подарки", "Прочее / проверить"]
             category = st.selectbox("Какую категорию уменьшает?", [item for item in shared_categories if item in expense_categories(profile)] or shared_categories, key=make_widget_key(prefix, "comp_category"))
             st.caption("Компенсация не считается доходом. Она уменьшает расход выбранной категории.")
         plan_behavior_options = ["Учитывать только в этом месяце", "Учитывать как постоянную статью", "Не учитывать в плане"]
-        default_behavior = "Не учитывать в плане" if scenario not in {"Компенсация расходов"} else default_plan_behavior_for_candidate(selected, scenario)
+        default_behavior = "Не учитывать в плане" if scenario not in {"Компенсация"} else default_plan_behavior_for_candidate(selected, "Компенсация расходов")
         plan_behavior = st.selectbox(
             "Как учитывать в плане?",
             plan_behavior_options,
@@ -3099,19 +3030,16 @@ def render_candidate_rule_form(
             format_func=rule_scope_label,
             key=make_widget_key(prefix, "scope"),
         )
-        if scenario == "Личный доход":
+        if scenario == "Доход":
             rule = build_income_rule_from_scenario(anchor, selected["direction"], "Личный доход", category, custom)
-        elif scenario == "Компенсация расходов":
+        elif scenario == "Компенсация":
             rule = build_income_rule_from_scenario(anchor, selected["direction"], "Компенсация расходов", category, custom)
             rule = apply_plan_behavior(rule, plan_behavior, selected)
-        elif scenario == "Мне вернули долг":
+        elif scenario == "Вернули долг":
             rule = build_income_rule_from_scenario(anchor, selected["direction"], "Возврат долга", "Не учитывать")
-        elif scenario == "Я занял деньги":
-            rule = build_income_rule_from_scenario(anchor, selected["direction"], "Возврат долга", "Не учитывать")
-            rule.update(operation_type="Заём получен", scenario="borrowed_money")
-        elif scenario == "Перевод между своими счетами":
+        elif scenario == "Перевод себе":
             rule = build_income_rule_from_scenario(anchor, selected["direction"], "Перевод между своими счетами", "Не учитывать")
-        elif scenario == "Проектный оборот":
+        elif scenario == "Оборотные средства для проекта / работы":
             rule = build_income_rule_from_scenario(anchor, selected["direction"], "Проектный оборот", "Не учитывать")
         elif scenario == "Не учитывать":
             rule = build_income_rule_from_scenario(anchor, selected["direction"], "Не учитывать", "Не учитывать")
@@ -3570,22 +3498,14 @@ def render_plan_tab(profile: dict, history: pd.DataFrame, report_month: str | No
             selected_income = important_income_candidates[important_income_candidates["anchor"] == income_anchor].iloc[0]
             income_scenario = st.radio(
                 "Что это за поступление?",
-                [
-                    "Личный доход",
-                    "Компенсация расходов",
-                    "Возврат долга",
-                    "Перевод между своими счетами",
-                    "Проектный оборот",
-                    "Не учитывать",
-                    "Другое / настроить вручную",
-                ],
+                [*INCOME_OPERATION_LABELS, "Другое / настроить вручную"],
                 key=make_widget_key(income_rule_key, "scenario"),
             )
-            income_category = "Прочий личный доход"
+            income_category = "Прочий доход"
             income_custom = None
-            if income_scenario == "Личный доход":
+            if income_scenario == "Доход":
                 income_category = st.selectbox("Категория дохода", income_categories(profile), key=make_widget_key(income_rule_key, "income_category"))
-            elif income_scenario == "Компенсация расходов":
+            elif income_scenario == "Компенсация":
                 income_category = st.selectbox("Какую категорию уменьшает?", expense_categories(profile), key=make_widget_key(income_rule_key, "comp_category"))
                 st.caption("Компенсация не считается доходом. Она уменьшает расход выбранной категории.")
             elif income_scenario == "Другое / настроить вручную":
@@ -3599,10 +3519,17 @@ def render_plan_tab(profile: dict, history: pd.DataFrame, report_month: str | No
                     "count_in_plan": st.checkbox("count_in_plan", value=False, key=make_widget_key(income_rule_key, "count_plan")),
                 }
             if st.button("Создать правило для поступления", key=make_widget_key(income_rule_key, "create")):
+                scenario_for_rule = {
+                    "Доход": "Личный доход",
+                    "Компенсация": "Компенсация расходов",
+                    "Вернули долг": "Возврат долга",
+                    "Перевод себе": "Перевод между своими счетами",
+                    "Оборотные средства для проекта / работы": "Проектный оборот",
+                }.get(income_scenario, income_scenario)
                 rule = build_income_rule_from_scenario(
                     income_anchor,
                     selected_income["direction"],
-                    income_scenario,
+                    scenario_for_rule,
                     income_category,
                     income_custom,
                 )

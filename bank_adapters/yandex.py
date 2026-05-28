@@ -53,11 +53,11 @@ def _classify_yandex_wallet(operation: dict) -> None:
     if match_any(text, ("YANDEX.TAXI", "YANDEX*4121*TAXI", "PAW*Yandex Go")):
         apply_budget(operation, "Личный расход", "Такси", "abs", 0.9, "yandex_merchant", True, True, False)
     elif match_any(text, ("YANDEX*5411*LAVKA", "YANDEX LAVKA")):
-        apply_budget(operation, "Личный расход", "Продукты / супермаркеты", "abs", 0.9, "yandex_merchant", True, True, False)
+        apply_budget(operation, "Личный расход", "Продукты", "abs", 0.9, "yandex_merchant", True, True, False)
     elif match_any(text, ("YANDEX*5814*EDA",)):
-        apply_budget(operation, "Личный расход", "Кафе / доставка / рестораны", "abs", 0.9, "yandex_merchant", True, True, False)
+        apply_budget(operation, "Личный расход", "Кафе и доставка", "abs", 0.9, "yandex_merchant", True, True, False)
     elif match_any(text, ("YANDEX PLUS", "YANDEX*5815*PLUS")):
-        apply_budget(operation, "Личный расход", "Связь / интернет / подписки", "abs", 0.9, "yandex_merchant", True, True, False)
+        apply_budget(operation, "Личный расход", "Связь и подписки", "abs", 0.9, "yandex_merchant", True, True, False)
     elif match_any(text, ("Yandex Split", "YANDEX*5399*Split")):
         mark_review(operation, "yandex_split_review", 0.5)
 

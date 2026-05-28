@@ -27,7 +27,7 @@ def parse_wb_wallet(text: str, metadata: dict) -> list[dict]:
             mark_internal(op, "wb_wallet_topup")
             op["operation_type"] = "wallet_topup"
         else:
-            apply_budget(op, "Личный расход", "Маркетплейсы", "abs", 0.95, "wb_purchase", True, True, False)
+            apply_budget(op, "Личный расход", "Прочее / проверить", "abs", 0.65, "wb_purchase_review", True, True, True)
         operations.append(op)
     return operations
 

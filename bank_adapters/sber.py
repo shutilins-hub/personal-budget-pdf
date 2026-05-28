@@ -129,7 +129,7 @@ def _classify_sber(operation: dict, document_type: str) -> None:
         apply_budget(operation, "cash_withdrawal", "Наличные / проверить", "0", 0.7, "sber_cash_withdrawal", False, False, True)
         return
     if operation.get("direction") == "income" and match_any(text, ("Заработная плата", "Аванс по заработной плате", "Премия, иные поощрительные выплаты")):
-        apply_budget(operation, "Личный доход", "Зарплата / аванс / премия", "abs", 0.95, "sber_salary", True, False, False)
+        apply_budget(operation, "Личный доход", "Зарплата", "abs", 0.95, "sber_salary", True, False, False)
         return
     if document_type == "sber_credit_card" and operation.get("direction") == "income":
         apply_budget(operation, "debt_repayment", "Не учитывать", "0", 0.9, "sber_credit_repayment", False, False, False)
@@ -141,14 +141,14 @@ def _classify_sber(operation: dict, document_type: str) -> None:
         operation["debt_amount"] = abs(float(operation.get("bank_amount") or 0))
         return
     category_map = {
-        "Супермаркеты": "Продукты / супермаркеты",
-        "Рестораны и кафе": "Кафе / доставка / рестораны",
+        "Супермаркеты": "Продукты",
+        "Рестораны и кафе": "Кафе и доставка",
         "Транспорт": "Транспорт",
-        "Автомобиль": "Авто / каршеринг",
-        "Здоровье и красота": "Здоровье / аптеки",
+        "Автомобиль": "Авто",
+        "Здоровье и красота": "Здоровье",
         "Одежда и аксессуары": "Одежда",
-        "Отдых и развлечения": "Развлечения",
-        "Коммунальные платежи, связь, интернет.": "Связь / интернет / подписки",
+        "Отдых и развлечения": "Отдых и развлечения",
+        "Коммунальные платежи, связь, интернет.": "Связь и подписки",
     }
     if operation.get("direction") == "expense" and category in category_map:
         apply_budget(operation, "Личный расход", category_map[category], "abs", 0.85, "sber_bank_category", True, True, False)

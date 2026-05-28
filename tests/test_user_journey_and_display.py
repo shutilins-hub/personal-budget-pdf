@@ -129,11 +129,11 @@ class UserJourneyAndDisplayTest(unittest.TestCase):
     def test_income_transfer_default_is_not_salary(self):
         candidate = {"anchor": "Перевод от Ш. Никита Юрьевич", "examples": "Перевод от Ш. Никита Юрьевич"}
         self.assertNotEqual(default_income_cleanup_scenario(candidate), "Личный доход")
-        self.assertEqual(default_income_cleanup_scenario(candidate), "Компенсация расходов")
+        self.assertEqual(default_income_cleanup_scenario(candidate), "Компенсация")
 
     def test_salary_text_can_default_to_personal_income(self):
         candidate = {"anchor": "Работодатель", "examples": "Зачисление заработной платы за май"}
-        self.assertEqual(default_income_cleanup_scenario(candidate), "Личный доход")
+        self.assertEqual(default_income_cleanup_scenario(candidate), "Доход")
 
     def test_cleanup_groups_sort_by_recurrence_and_amount(self):
         groups = pd.DataFrame(

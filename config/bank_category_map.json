@@ -2,13 +2,13 @@
   "Сбер": {
     "Супермаркеты": {
       "operation_type": "Личный расход",
-      "budget_category": "Продукты / супермаркеты",
+      "budget_category": "Продукты",
       "personal_amount_mode": "abs",
       "confidence": 0.75
     },
     "Рестораны и кафе": {
       "operation_type": "Личный расход",
-      "budget_category": "Кафе / доставка / рестораны",
+      "budget_category": "Кафе и доставка",
       "personal_amount_mode": "abs",
       "confidence": 0.8
     },
@@ -20,19 +20,19 @@
     },
     "Автомобиль": {
       "operation_type": "Личный расход",
-      "budget_category": "Авто / каршеринг",
+      "budget_category": "Авто",
       "personal_amount_mode": "abs",
       "confidence": 0.85
     },
     "Одежда и аксессуары": {
       "operation_type": "Личный расход",
-      "budget_category": "Дом / одежда / бытовое",
+      "budget_category": "Дом и быт",
       "personal_amount_mode": "abs",
       "confidence": 0.75
     },
     "Коммунальные платежи, связь, интернет.": {
       "operation_type": "Личный расход",
-      "budget_category": "Связь / интернет / подписки",
+      "budget_category": "Связь и подписки",
       "personal_amount_mode": "abs",
       "confidence": 0.75
     },

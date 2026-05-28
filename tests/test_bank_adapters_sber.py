@@ -34,7 +34,7 @@ class SberAdapterTest(unittest.TestCase):
             ]
         )
         ops = parse_sber_debit_account(text, {"profile_id": "p", "source_file": "sber.pdf"})
-        self.assertEqual(ops[0]["budget_category"], "Продукты / супермаркеты")
+        self.assertEqual(ops[0]["budget_category"], "Продукты")
         self.assertEqual(ops[1]["operation_type"], "Внутренний перевод")
         self.assertEqual(ops[2]["operation_type"], "Личный доход")
 
@@ -42,4 +42,3 @@ class SberAdapterTest(unittest.TestCase):
         metadata = extract_sber_credit_metadata("Кредитный лимит 100 000,00\nОбщая задолженность 25 000,00")
         self.assertEqual(metadata["credit_limit"], 100000.0)
         self.assertEqual(metadata["debt_end"], 25000.0)
-

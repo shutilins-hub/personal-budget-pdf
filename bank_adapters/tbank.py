@@ -86,7 +86,7 @@ def _classify_tbank(operation: dict) -> None:
     if "Оплата в " in text:
         merchant = operation.get("merchant_anchor", "")
         if match_any(merchant, ("MARIYA-RA", "МАРИЯ-РА", "PYATEROCHKA", "MAGNIT", "LENTA")):
-            category = "Продукты / супермаркеты"
+            category = "Продукты"
         elif match_any(merchant, ("TRANSPORT", "METRO")):
             category = "Транспорт"
         else:

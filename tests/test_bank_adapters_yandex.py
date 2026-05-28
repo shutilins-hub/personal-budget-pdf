@@ -15,7 +15,7 @@ class YandexAdapterTest(unittest.TestCase):
         ops = parse_yandex_wallet_eds(text, {"profile_id": "p", "source_file": "y.pdf"})
         self.assertEqual(ops[0]["operation_type"], "Внутренний перевод")
         self.assertEqual(ops[1]["budget_category"], "Такси")
-        self.assertEqual(ops[2]["budget_category"], "Продукты / супермаркеты")
+        self.assertEqual(ops[2]["budget_category"], "Продукты")
 
     def test_credit_rules(self):
         text = "\n".join(
@@ -27,4 +27,3 @@ class YandexAdapterTest(unittest.TestCase):
         ops = parse_yandex_credit_contract(text, {"profile_id": "p", "source_file": "yc.pdf"})
         self.assertEqual(ops[0]["operation_type"], "credit_purchase")
         self.assertEqual(ops[1]["operation_type"], "debt_repayment")
-

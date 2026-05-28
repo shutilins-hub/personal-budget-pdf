@@ -268,7 +268,7 @@ def classify_income_system(operation: dict[str, Any]) -> dict[str, Any] | None:
         return apply_classification(
             operation,
             "Личный доход",
-            "Зарплата / аванс",
+            "Зарплата",
             abs(float(operation.get("bank_amount") or 0)),
             0.95,
             "system_salary",

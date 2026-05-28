@@ -52,50 +52,60 @@ RAW_REVIEW_CATEGORIES = {
     "Прочее / проверить",
 }
 RAW_CATEGORY_MAP = {
-    "Супермаркеты": "Продукты / супермаркеты",
-    "Рестораны и кафе": "Кафе / доставка / рестораны",
+    "Супермаркеты": "Продукты",
+    "Рестораны и кафе": "Кафе и доставка",
     "Транспорт": "Транспорт",
-    "Автомобиль": "Авто / каршеринг",
-    "Здоровье и красота": "Здоровье / аптеки",
-    "Одежда и аксессуары": "Дом / одежда / бытовое",
-    "Отдых и развлечения": "Развлечения",
+    "Автомобиль": "Авто",
+    "Здоровье и красота": "Здоровье",
+    "Одежда и аксессуары": "Дом и быт",
+    "Отдых и развлечения": "Отдых и развлечения",
 }
 RAW_MERCHANT_CATEGORY_RULES = [
-    (("SAMOKAT", "LAVKA", "САМОКАТ", "ЛАВКА"), "Продукты / супермаркеты"),
+    (("SAMOKAT", "LAVKA", "САМОКАТ", "ЛАВКА"), "Продукты"),
     (("YANDEX*4121*GO", "FASTEN", "TAXI"), "Такси"),
-    (("YANDEX*5814*EDA",), "Кафе / доставка / рестораны"),
-    (("CITYDRIVE", "CARSHARING"), "Авто / каршеринг"),
+    (("YANDEX*5814*EDA",), "Кафе и доставка"),
+    (("CITYDRIVE", "CARSHARING"), "Авто"),
     (("WHOOSH",), "Транспорт"),
-    (("SBERPRIME", "BEELINE", "БИЛАЙН"), "Связь / интернет / подписки"),
-    (("APTEKA", "APTECHNOE", "36,6", "АПТЕКА"), "Здоровье / аптеки"),
-    (("WILDBERRIES", "OZON"), "Маркетплейсы"),
+    (("SBERPRIME", "BEELINE", "БИЛАЙН"), "Связь и подписки"),
+    (("APTEKA", "APTECHNOE", "36,6", "АПТЕКА"), "Здоровье"),
+    (("WILDBERRIES", "OZON"), "Прочее / проверить"),
 ]
 
 BASE_LIVING_CATEGORIES = {
     "Жильё",
+    "Продукты",
     "Продукты / супермаркеты",
+    "Кафе и доставка",
     "Кафе / доставка / рестораны",
     "Транспорт",
     "Такси",
+    "Авто",
     "Авто / каршеринг",
+    "Связь и подписки",
     "Связь / интернет / подписки",
+    "Здоровье",
     "Здоровье / аптеки",
     "Психолог / терапия",
+    "Красота и уход",
     "Красота / уход",
+    "Дом и быт",
     "Маркетплейсы",
     "Дом / ремонт / бытовое",
     "Дом / одежда / бытовое",
     "Одежда",
     "Обучение",
+    "Отдых и развлечения",
     "Развлечения",
+    "Семья и подарки",
     "Подарки / семья",
     "Путешествия",
+    "Документы и обязательные платежи",
     "Документы / визы",
     "Крупная медицина / стоматология",
     "Прочее / проверить",
 }
 OBLIGATION_TYPES = {"debt_repayment", "Погашение кредита", "credit_interest", "bank_fee"}
-OBLIGATION_CATEGORIES = {"Кредиты / проценты / комиссии"}
+OBLIGATION_CATEGORIES = {"Кредиты / проценты / комиссии", "Документы и обязательные платежи"}
 UNRESOLVED_CATEGORIES = {"Неразобранные переводы / проверить", "Наличные / проверить"}
 
 
@@ -897,12 +907,12 @@ def build_auto_income_plan(
     rows = []
     for category, group in monthly.groupby("budget_category"):
         values = group["personal_amount"]
-        suggested = float(values.iloc[-1] if category in {"Зарплата / аванс / премия", "Зарплата / аванс"} else values.median())
+        suggested = float(values.iloc[-1] if category in {"Зарплата", "Зарплата / аванс / премия", "Зарплата / аванс"} else values.median())
         if strategy == "p75":
             suggested = float(values.quantile(0.75))
         rows.append(
             {
-                "income_category": category or "Прочий личный доход",
+                "income_category": category or "Прочий доход",
                 "history_fact": float(values.sum()),
                 "suggested_plan": suggested,
                 "manual_plan": suggested,
@@ -914,7 +924,7 @@ def build_auto_income_plan(
 def infer_raw_income_category(row: pd.Series) -> tuple[str, str, str]:
     operation_type = row.get("operation_type")
     if operation_type == "Личный доход":
-        return str(row.get("budget_category") or "Прочий личный доход"), "ready", "Личный доход уже распознан."
+        return str(row.get("budget_category") or "Прочий доход"), "ready", "Личный доход уже распознан."
     if operation_type == "Компенсация совместных расходов":
         return "Компенсации / проверить", "excluded", "Компенсации не считаются доходом, они уменьшают расходы."
     if operation_type == "Возврат займа":
@@ -923,7 +933,7 @@ def infer_raw_income_category(row: pd.Series) -> tuple[str, str, str]:
         return "Проектные поступления / проверить", "excluded", "Операция исключена из личного доходного плана."
     text = normalize_text(" ".join(str(row.get(key, "") or "") for key in ["description", "raw_category", "budget_category"]))
     if "заработная плата" in text or "аванс" in text or "премия" in text:
-        return "Зарплата / аванс / премия", "needs_classification", "Похоже на доход, проверьте и создайте правило."
+        return "Зарплата", "needs_classification", "Похоже на доход, проверьте и создайте правило."
     if "социаль" in text:
         return "Прочие выплаты", "needs_classification", "Похоже на выплату, проверьте источник."
     return "Неразобранные поступления / проверить", "needs_classification", "Входящие операции учтены в черновике, но требуют разметки."

@@ -29,7 +29,7 @@ class RulesOrderTest(unittest.TestCase):
                     "merchant_anchor": "SAMOKAT",
                     "direction": "expense",
                     "operation_type": "Личный расход",
-                    "budget_category": "Кафе / доставка / рестораны",
+                    "budget_category": "Кафе и доставка",
                     "personal_amount_mode": "abs",
                 }
             ],
@@ -37,7 +37,7 @@ class RulesOrderTest(unittest.TestCase):
 
         result = classify_operation(operation("Прочие расходы", "SAMOKAT MOSCOW"), profile)
 
-        self.assertEqual(result["budget_category"], "Кафе / доставка / рестораны")
+        self.assertEqual(result["budget_category"], "Кафе и доставка")
 
     def test_person_rule_overrides_everything(self):
         profile = {
@@ -67,7 +67,7 @@ class RulesOrderTest(unittest.TestCase):
     def test_global_rule_applies_before_bank_category(self):
         result = classify_operation(operation("Супермаркеты", "COFFEE POINT MOSCOW"), {"rules": []})
 
-        self.assertEqual(result["budget_category"], "Кафе / доставка / рестораны")
+        self.assertEqual(result["budget_category"], "Кафе и доставка")
         self.assertEqual(result["operation_type"], "Личный расход")
 
     def test_unknown_operation_goes_to_review(self):

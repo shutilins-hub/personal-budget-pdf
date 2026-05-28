@@ -9,7 +9,7 @@ class TBankAdapterTest(unittest.TestCase):
 
     def test_purchase_food(self):
         op = self.parse_one("Оплата в MARIYA-RA Barnaul RUS")
-        self.assertEqual(op["budget_category"], "Продукты / супермаркеты")
+        self.assertEqual(op["budget_category"], "Продукты")
 
     def test_internal_transfers(self):
         for description in ["Внутренний перевод на договор", "Пополнение Кубышки"]:
@@ -22,4 +22,3 @@ class TBankAdapterTest(unittest.TestCase):
                 op = self.parse_one(description)
                 self.assertTrue(op["needs_review"])
                 self.assertEqual(op["operation_type"], "unknown_transfer")
-

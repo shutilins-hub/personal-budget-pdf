@@ -10,5 +10,5 @@ class WBAdapterTest(unittest.TestCase):
             {"profile_id": "p", "source_file": "wb.pdf"},
         )
         self.assertEqual(ops[0]["operation_type"], "wallet_topup")
-        self.assertEqual(ops[1]["budget_category"], "Маркетплейсы")
-
+        self.assertEqual(ops[1]["budget_category"], "Прочее / проверить")
+        self.assertTrue(ops[1]["needs_review"])

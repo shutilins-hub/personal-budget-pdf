@@ -25,7 +25,7 @@ class ClassifierTest(unittest.TestCase):
         result = classify_operation(operation("Супермаркеты", "VKUSVILL", -1200.0), {"rules": []})
 
         self.assertEqual(result["operation_type"], "Личный расход")
-        self.assertEqual(result["budget_category"], "Продукты / супермаркеты")
+        self.assertEqual(result["budget_category"], "Продукты")
         self.assertEqual(result["personal_amount"], 1200.0)
         self.assertFalse(result["needs_review"])
 
@@ -52,7 +52,7 @@ class ClassifierTest(unittest.TestCase):
         )
 
         self.assertEqual(result["operation_type"], "Личный доход")
-        self.assertEqual(result["budget_category"], "Зарплата / аванс")
+        self.assertEqual(result["budget_category"], "Зарплата")
         self.assertEqual(result["personal_amount"], 100000.0)
         self.assertFalse(result["needs_review"])
 
@@ -86,20 +86,20 @@ class ClassifierTest(unittest.TestCase):
             {"rules": []},
         )
 
-        self.assertEqual(result["budget_category"], "Продукты / супермаркеты")
+        self.assertEqual(result["budget_category"], "Продукты")
         self.assertFalse(result["needs_review"])
 
     def test_sber_yasno_goes_to_therapy(self):
         result = classify_operation(operation("Все для дома", "YM*YASNO MOSCOW RUS. Операция по карте ****0653", -3000.0), {"rules": []})
 
         self.assertEqual(result["operation_type"], "Личный расход")
-        self.assertEqual(result["budget_category"], "Психолог / терапия")
+        self.assertEqual(result["budget_category"], "Здоровье")
 
     def test_sber_voron_goes_to_carsharing(self):
         result = classify_operation(operation("Отдых и развлечения", "VORON MOSCOW RUS. Операция по карте ****0653", -3000.0), {"rules": []})
 
         self.assertEqual(result["operation_type"], "Личный расход")
-        self.assertEqual(result["budget_category"], "Авто / каршеринг")
+        self.assertEqual(result["budget_category"], "Авто")
 
     def test_getcourse_goes_to_education(self):
         result = classify_operation(operation("Прочие расходы", "GETCOURSE MOSCOW RUS. Операция по карте ****0653", -5000.0), {"rules": []})
@@ -111,10 +111,10 @@ class ClassifierTest(unittest.TestCase):
         burger = classify_operation(operation("Оплата по QR–коду СБП", "ООО БУРГЕР РУС. Операция по карте ****8640", -59.98), {"rules": []})
 
         self.assertEqual(whoosh["operation_type"], "Личный расход")
-        self.assertEqual(whoosh["budget_category"], "Развлечения")
+        self.assertEqual(whoosh["budget_category"], "Отдых и развлечения")
         self.assertFalse(whoosh["needs_review"])
         self.assertEqual(burger["operation_type"], "Личный расход")
-        self.assertEqual(burger["budget_category"], "Кафе / доставка / рестораны")
+        self.assertEqual(burger["budget_category"], "Кафе и доставка")
         self.assertFalse(burger["needs_review"])
 
     def test_sber_cash_withdrawal_is_separate_zero_budget_type(self):
@@ -164,7 +164,7 @@ class ClassifierTest(unittest.TestCase):
         )
 
         self.assertEqual(grocery["merchant_anchor"], "MARIYA-RA")
-        self.assertEqual(grocery["budget_category"], "Продукты / супермаркеты")
+        self.assertEqual(grocery["budget_category"], "Продукты")
         self.assertEqual(transport["merchant_anchor"], "TRANSPORT BARNAUL_TPP")
         self.assertEqual(transport["budget_category"], "Транспорт")
 

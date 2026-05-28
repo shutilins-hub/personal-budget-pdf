@@ -135,11 +135,11 @@ def default_income_cleanup_scenario(candidate_or_row: dict[str, Any] | pd.Series
     description = str(candidate_or_row.get("description") or candidate_or_row.get("examples") or "")
     raw_category = str(candidate_or_row.get("raw_category") or "")
     if looks_like_salary_text(anchor, description, raw_category):
-        return "Личный доход"
+        return "Доход"
     transfer_from_person = "перевод от" in " ".join([anchor, description, raw_category]).casefold()
     if transfer_from_person or str(candidate_or_row.get("person_anchor") or "").strip():
-        return "Компенсация расходов"
-    return "Компенсация расходов"
+        return "Компенсация"
+    return "Компенсация"
 
 
 def sort_cleanup_groups(candidates: pd.DataFrame) -> pd.DataFrame:
