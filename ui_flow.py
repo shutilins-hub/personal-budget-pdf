@@ -59,6 +59,15 @@ IMPORT_STATUS_LABELS = {
     None: "Не определён",
 }
 
+SALARY_HINTS = (
+    "зарплат",
+    "аванс",
+    "премия",
+    "salary",
+    "payroll",
+    "зачисление заработной",
+)
+
 
 TECHNICAL_DISPLAY_OPERATION_COLUMNS = {
     "document_type": "тип документа",
@@ -114,6 +123,58 @@ def import_period_display(period_start: str | None, period_end: str | None) -> s
     if start and end:
         return f"{start} — {end}"
     return start or end
+
+
+def looks_like_salary_text(*parts: object) -> bool:
+    text = " ".join(str(part or "") for part in parts).casefold()
+    return any(hint in text for hint in SALARY_HINTS)
+
+
+def default_income_cleanup_scenario(candidate_or_row: dict[str, Any] | pd.Series) -> str:
+    anchor = str(candidate_or_row.get("anchor") or "")
+    description = str(candidate_or_row.get("description") or candidate_or_row.get("examples") or "")
+    raw_category = str(candidate_or_row.get("raw_category") or "")
+    if looks_like_salary_text(anchor, description, raw_category):
+        return "Личный доход"
+    transfer_from_person = "перевод от" in " ".join([anchor, description, raw_category]).casefold()
+    if transfer_from_person or str(candidate_or_row.get("person_anchor") or "").strip():
+        return "Компенсация расходов"
+    return "Компенсация расходов"
+
+
+def sort_cleanup_groups(candidates: pd.DataFrame) -> pd.DataFrame:
+    if candidates.empty:
+        return candidates
+    df = candidates.copy()
+    count = pd.to_numeric(df.get("count", 0), errors="coerce").fillna(0)
+    months_seen = pd.to_numeric(df.get("months_seen", 0), errors="coerce").fillna(0)
+    total_sum = pd.to_numeric(df.get("total_sum", 0), errors="coerce").fillna(0)
+    median_monthly = pd.to_numeric(df.get("median_monthly_sum", 0), errors="coerce").fillna(0)
+    nature = df.get("expense_nature", pd.Series("", index=df.index)).fillna("").astype(str)
+    df["_recurring_rank"] = ((count > 1) | (months_seen >= 2) | nature.eq("recurring")).astype(int)
+    df["_large_rank"] = nature.eq("oneoff_large").astype(int)
+    df["_total_sort"] = total_sum
+    df["_median_sort"] = median_monthly
+    return df.sort_values(
+        ["_recurring_rank", "_large_rank", "_median_sort", "_total_sort", "count"],
+        ascending=[False, False, False, False, False],
+    ).drop(columns=["_recurring_rank", "_large_rank", "_total_sort", "_median_sort"], errors="ignore")
+
+
+def compact_money(value: object) -> str:
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    sign = "-" if amount < 0 else ""
+    return f"{sign}{abs(amount):,.0f}".replace(",", " ") + " ₽"
+
+
+def format_review_operation_line(row: dict[str, Any] | pd.Series) -> str:
+    dt = pd.to_datetime(row.get("operation_datetime"), errors="coerce")
+    date_text = dt.strftime("%d.%m") if pd.notna(dt) else "дата не указана"
+    description = str(row.get("description") or row.get("normalized_description") or "").strip()
+    return f"{date_text} · {compact_money(row.get('bank_amount'))} · {description}"
 
 
 def profile_has_plan(profile: dict[str, Any]) -> bool:

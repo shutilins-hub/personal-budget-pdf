@@ -8,9 +8,12 @@ try:
         build_home_primary_action,
         build_home_secondary_actions,
         build_user_journey_steps,
+        default_income_cleanup_scenario,
         determine_user_next_step,
+        format_review_operation_line,
         import_period_display,
         import_status_label,
+        sort_cleanup_groups,
         visible_operation_columns,
     )
 except ModuleNotFoundError:
@@ -20,9 +23,12 @@ except ModuleNotFoundError:
     build_home_primary_action = None
     build_home_secondary_actions = None
     build_user_journey_steps = None
+    default_income_cleanup_scenario = None
     determine_user_next_step = None
+    format_review_operation_line = None
     import_period_display = None
     import_status_label = None
+    sort_cleanup_groups = None
     visible_operation_columns = None
 
 
@@ -119,6 +125,31 @@ class UserJourneyAndDisplayTest(unittest.TestCase):
         self.assertEqual(import_period_display("", ""), "не определён")
         self.assertEqual(import_period_display(None, None), "не определён")
         self.assertEqual(import_period_display("2026-05-01", "2026-05-31"), "2026-05-01 — 2026-05-31")
+
+    def test_income_transfer_default_is_not_salary(self):
+        candidate = {"anchor": "Перевод от Ш. Никита Юрьевич", "examples": "Перевод от Ш. Никита Юрьевич"}
+        self.assertNotEqual(default_income_cleanup_scenario(candidate), "Личный доход")
+        self.assertEqual(default_income_cleanup_scenario(candidate), "Компенсация расходов")
+
+    def test_salary_text_can_default_to_personal_income(self):
+        candidate = {"anchor": "Работодатель", "examples": "Зачисление заработной платы за май"}
+        self.assertEqual(default_income_cleanup_scenario(candidate), "Личный доход")
+
+    def test_cleanup_groups_sort_by_recurrence_and_amount(self):
+        groups = pd.DataFrame(
+            [
+                {"anchor": "Разовая крупная", "count": 1, "months_seen": 1, "total_sum": 50000, "median_monthly_sum": 50000, "expense_nature": "oneoff_large"},
+                {"anchor": "Повторяется", "count": 3, "months_seen": 2, "total_sum": 18000, "median_monthly_sum": 9000, "expense_nature": "recurring"},
+                {"anchor": "Мелкая", "count": 1, "months_seen": 1, "total_sum": 1000, "median_monthly_sum": 1000, "expense_nature": "oneoff_minor"},
+            ]
+        )
+        sorted_groups = sort_cleanup_groups(groups)
+        self.assertEqual(sorted_groups.iloc[0]["anchor"], "Повторяется")
+        self.assertEqual(sorted_groups.iloc[1]["anchor"], "Разовая крупная")
+
+    def test_review_operation_line_is_human_readable(self):
+        row = {"operation_datetime": "2026-05-15T06:08:00", "bank_amount": 10000, "description": "Перевод от Никиты"}
+        self.assertEqual(format_review_operation_line(row), "15.05 · 10 000 ₽ · Перевод от Никиты")
 
     def test_done_steps_still_have_tabs(self):
         history = pd.DataFrame([operation(False)])
