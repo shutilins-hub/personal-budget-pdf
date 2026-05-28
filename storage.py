@@ -184,8 +184,8 @@ def init_db() -> None:
         conn.execute("DROP INDEX IF EXISTS idx_operations_unique")
         conn.execute(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_unique
-            ON operations(profile_id, bank, account_id, operation_datetime, bank_amount, normalized_description)
+            CREATE INDEX IF NOT EXISTS idx_operations_lookup
+            ON operations(profile_id, bank, account_id, operation_datetime)
             """
         )
         conn.execute(

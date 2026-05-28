@@ -381,7 +381,16 @@ def render_sidebar(profile: dict, operations: pd.DataFrame, history: pd.DataFram
         st.sidebar.info("Настройки профиля теперь находятся во вкладке “Профиль”.")
     with st.sidebar.expander("Опасная зона"):
         st.caption("Удаляет только операции текущего профиля. Профиль, план и правила останутся.")
-        if st.button("Очистить тестовые данные", use_container_width=True, key=make_widget_key("danger_clear", profile["id"])):
+        confirm_clear = st.checkbox(
+            "Я понимаю, что операции будут удалены",
+            key=make_widget_key("danger_clear_confirm", profile["id"]),
+        )
+        if st.button(
+            "Очистить тестовые данные",
+            use_container_width=True,
+            disabled=not confirm_clear,
+            key=make_widget_key("danger_clear", profile["id"]),
+        ):
             deleted = delete_profile_operations(profile["id"])
             st.sidebar.success(f"Удалено операций: {deleted}")
             st.rerun()
@@ -619,6 +628,8 @@ def import_pdfs(profile: dict, uploaded_files: list, start_date: date, end_date:
         for operation in classified:
             operation["import_batch_id"] = batch_id
             operation["source_file_name"] = source_file
+        # Обычный импорт только добавляет новые операции: дубли отсекаются через duplicate_key,
+        # а удаление истории доступно отдельно в явной опасной зоне.
         stats = insert_operations_with_stats(classified, import_batch_id=batch_id)
         storage.update_import_batch(
             batch_id,
@@ -676,6 +687,9 @@ def import_pdfs(profile: dict, uploaded_files: list, start_date: date, end_date:
         "period_end": end_date.isoformat(),
         "operations_in_period": len(period_operations),
         "needs_review": review_count,
+        "latest_operation_date": latest_operation_date(profile["id"]) or "",
+        "period_already_loaded": total_duplicates > 0 and total_inserted == 0,
+        "period_partially_loaded": total_duplicates > 0 and total_inserted > 0,
         "raw_category_summary": raw_category_summary(parsed_df).to_dict("records"),
     }
     write_import_debug("\n\n".join(all_text_parts), all_parsed, summary)
@@ -692,6 +706,12 @@ def show_import_diagnostics(summary: dict) -> None:
     with st.expander("Диагностика импорта"):
         st.write(f"Дублей пропущено: {summary['duplicates_skipped']}")
         st.write(f"Отфильтровано защитой: {summary['filtered_operations']}")
+        if summary.get("period_already_loaded"):
+            st.info("Этот период, похоже, уже был загружен. Новые операции не добавились, дубли пропущены.")
+        elif summary.get("period_partially_loaded"):
+            st.info("Период частично уже был в истории. Старые операции пропущены как дубли, новые добавлены.")
+        if summary.get("latest_operation_date"):
+            st.write(f"Последняя дата операции в профиле: {summary['latest_operation_date']}")
         for file_summary in summary["files"]:
             st.markdown(f"**{file_summary['source_file']}**")
             st.write(f"Банк определён: {file_summary['bank']}")
