@@ -56,11 +56,14 @@ from ui.components import (
     render_section_card,
 )
 from ui_flow import (
+    account_type_label,
     build_budget_readiness as build_budget_readiness_core,
     build_home_primary_action as build_home_primary_action_core,
     build_home_secondary_actions as build_home_secondary_actions_core,
     build_user_journey_steps as build_user_journey_steps_core,
     determine_user_next_step as determine_user_next_step_core,
+    import_period_display,
+    import_status_label,
     review_count_for_operations,
     visible_operation_columns,
 )
@@ -329,8 +332,16 @@ def month_progress(start_date: date, end_date: date) -> tuple[int, int]:
     return (today - start_date).days + 1, days_in_month
 
 
-def render_user_journey(history: pd.DataFrame, operations: pd.DataFrame, profile: dict, active_step: str) -> None:
+def render_user_journey(history: pd.DataFrame, operations: pd.DataFrame, profile: dict, active_step: str, variant: str = "compact") -> None:
     steps = build_user_journey_steps(history, operations, profile, active_step)
+    current = next((step for step in steps if step["title"] == active_step), None)
+    next_step = determine_user_next_step(history, operations, profile)
+    if variant == "compact":
+        if current:
+            st.caption(current["hint"])
+        if next_step != active_step:
+            st.info(f"Следующий шаг: {next_step}.")
+        return
     html = ['<div class="step-strip">']
     for step in steps:
         css = "step-active" if step["status"] == "active" else "step-done" if step["status"] == "done" else ""
@@ -350,8 +361,6 @@ def render_user_journey(history: pd.DataFrame, operations: pd.DataFrame, profile
                 on_click=navigate_to,
                 args=(step["tab"],),
             )
-    current = next((step for step in steps if step["title"] == active_step), None)
-    next_step = determine_user_next_step(history, operations, profile)
     if current:
         st.caption(current["hint"])
     if next_step != active_step:
@@ -398,13 +407,16 @@ def render_sidebar(profile: dict, operations: pd.DataFrame, history: pd.DataFram
         f"В месяце: {len(operations)} операций · На проверку: {int(metrics['review_count'])} · "
         f"Осталось: {money(metrics['limit_left'])}"
     )
-    st.sidebar.button(
-        "Настройки профиля",
-        use_container_width=True,
-        on_click=navigate_to,
-        args=("Профиль и загрузка",),
-        key=make_widget_key("sidebar_profile_settings", profile["id"]),
-    )
+    if st.session_state.get("active_tab") == "Профиль и загрузка":
+        st.sidebar.button("Вы в настройках профиля", use_container_width=True, disabled=True)
+    else:
+        st.sidebar.button(
+            "Настройки профиля",
+            use_container_width=True,
+            on_click=navigate_to,
+            args=("Профиль и загрузка",),
+            key=make_widget_key("sidebar_profile_settings", profile["id"]),
+        )
     with st.sidebar.expander("Опасная зона"):
         st.caption("Удаляет только операции текущего профиля. Профиль, план и правила останутся.")
         confirm_clear = st.checkbox(
@@ -784,7 +796,9 @@ def render_import_history(profile_id: str) -> None:
         st.caption("Истории загрузок пока нет.")
         return
     display = batches.copy()
-    display["период"] = display["period_start"].fillna("").astype(str) + " — " + display["period_end"].fillna("").astype(str)
+    display["период"] = display.apply(lambda row: import_period_display(row.get("period_start"), row.get("period_end")), axis=1)
+    display["account_type"] = display["account_type"].map(account_type_label).fillna("Не определён")
+    display["status"] = display["status"].map(import_status_label).fillna("Не определён")
     display = display.rename(
         columns={
             "imported_at": "дата загрузки",
@@ -804,8 +818,8 @@ def render_import_history(profile_id: str) -> None:
 
 
 def upload_pdf(profile: dict, start_date: date, end_date: date) -> None:
-    st.subheader("Загрузка выписок")
     st.write("Загрузите PDF-выписки минимум за 6 месяцев из всех банков, которыми пользуетесь.")
+    st.caption(f"Приложение примет PDF до {get_app_config().max_upload_mb} МБ на файл.")
     uploaded_files = st.file_uploader(
         "Добавьте выписки или справки о движении средств",
         type=["pdf"],
@@ -3886,7 +3900,6 @@ def render_rules_tab(profile: dict, operations: pd.DataFrame) -> None:
 
 
 def render_profile_settings_tab(profile: dict) -> None:
-    st.subheader("Данные профиля")
     with st.expander("Основные настройки", expanded=True):
         profile["name"] = st.text_input("Название профиля", value=profile.get("name", ""), key=make_widget_key("profile_name", profile["id"]))
         profile["manual_limit"] = st.number_input(
@@ -3958,13 +3971,46 @@ def profile_identity_needs_attention(profile: dict) -> bool:
     return not bool(identity.get("full_name") and (identity.get("name_aliases") or identity.get("phones") or identity.get("account_last4")))
 
 
+def profile_readiness_text(profile: dict) -> tuple[str, str, str]:
+    identity = profile.get("own_identity") or {}
+    missing = []
+    if not identity.get("full_name"):
+        missing.append("Ф.И.О.")
+    if not identity.get("phones"):
+        missing.append("телефоны")
+    if not identity.get("account_last4"):
+        missing.append("последние 4 цифры карт/счетов")
+    if not identity.get("banks"):
+        missing.append("банки/кошельки")
+    if not missing:
+        return "Профиль готов", "Данные помогут отличать свои переводы от доходов и расходов.", "good"
+    if len(missing) <= 2:
+        return "Профиль заполнен частично", "Можно добавить: " + ", ".join(missing) + ".", "warn"
+    return "Профиль заполнен частично", "Добавьте свои телефоны, карты и банки для точного распознавания переводов.", "warn"
+
+
 def render_profile_and_upload_page(profile: dict, history: pd.DataFrame, operations: pd.DataFrame, start_date: date, end_date: date) -> None:
+    status, hint, status_kind = profile_readiness_text(profile)
+    st.markdown(
+        f"""
+        <div class="budget-hero">
+            <h1>Профиль и загрузка</h1>
+            <div class="budget-sub">Заполните данные профиля и загрузите PDF-выписки. Это поможет отличать свои переводы от доходов и расходов.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     render_user_journey(history, operations, profile, "Профиль и загрузка")
-    st.write("Сначала заполните данные профиля и загрузите PDF-выписки. Это помогает отличать свои переводы от доходов и расходов.")
-    if profile_identity_needs_attention(profile):
-        st.info("Заполните данные профиля, чтобы сервис мог отличать переводы самому себе от доходов и расходов.")
+    render_metric_grid(
+        [
+            {"label": "Профиль", "value": status, "hint": hint, "status": status_kind},
+            {"label": "Операций в базе", "value": str(len(history)), "hint": "История накапливается без обнуления.", "status": "good" if not history.empty else "warn"},
+            {"label": "Операций на проверку", "value": str(review_count_for_operations(operations)), "hint": "После импорта перейдите к очистке.", "status": "warn" if review_count_for_operations(operations) else "good"},
+        ]
+    )
+    st.subheader("Данные профиля")
     render_profile_settings_tab(profile)
-    st.divider()
+    st.subheader("Загрузка выписок")
     upload_pdf(profile, start_date, end_date)
 
 
@@ -4034,18 +4080,18 @@ def main() -> None:
     report_month, start_date, end_date = period_picker(profile["id"])
     operations = operations_df(profile["id"], start_date, end_date)
     history = operations_df(profile["id"])
-    render_sidebar(profile, operations, history, start_date, end_date)
     plan = profile_plan_df(profile)
     latest_date = latest_operation_date(profile["id"])
-    st.caption(
-        f"Операций в месяце: {len(operations)} · Операций в базе: {len(history)} · "
-        f"Последняя дата операции: {latest_date or 'нет данных'}"
-    )
     nav_tabs = ["Главная", "Профиль и загрузка", "Очистка", "План", "Контроль", "Правила", "Диагностика"]
     if st.session_state.pop("active_page_after_import", None) == "Очистка":
         st.session_state["active_tab"] = "Очистка"
     if "active_tab" not in st.session_state or st.session_state["active_tab"] not in nav_tabs:
         st.session_state["active_tab"] = "Главная" if not history.empty else "Профиль и загрузка"
+    render_sidebar(profile, operations, history, start_date, end_date)
+    st.caption(
+        f"Операций в месяце: {len(operations)} · Операций в базе: {len(history)} · "
+        f"Последняя дата операции: {latest_date or 'нет данных'}"
+    )
     if st.session_state.get("nav_selected_tab") != st.session_state["active_tab"]:
         st.session_state["nav_selected_tab"] = st.session_state["active_tab"]
     selected_tab = st.radio(

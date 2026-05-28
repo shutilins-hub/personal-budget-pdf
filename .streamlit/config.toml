@@ -10,6 +10,7 @@ toolbarMode = "minimal"
 headless = false
 port = 8501
 showEmailPrompt = false
+maxUploadSize = 100
 
 [theme]
 base = "light"

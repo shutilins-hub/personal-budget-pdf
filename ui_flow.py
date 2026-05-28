@@ -37,6 +37,28 @@ DISPLAY_OPERATION_COLUMNS = {
     "needs_review": "проверить",
 }
 
+ACCOUNT_TYPE_LABELS = {
+    "debit_account": "Дебетовая карта",
+    "credit_card": "Кредитная карта",
+    "installment_card": "Карта рассрочки",
+    "loan_account": "Кредит / заём",
+    "savings_account": "Вклад / накопительный счёт",
+    "wallet": "Кошелёк",
+    "marketplace_wallet": "Кошелёк маркетплейса",
+    "unknown": "Не определён",
+    "": "Не определён",
+    None: "Не определён",
+}
+
+IMPORT_STATUS_LABELS = {
+    "imported": "Импортировано",
+    "parsed": "Разобрано",
+    "skipped_irrelevant": "Пропущено",
+    "error": "Ошибка",
+    "": "Не определён",
+    None: "Не определён",
+}
+
 
 TECHNICAL_DISPLAY_OPERATION_COLUMNS = {
     "document_type": "тип документа",
@@ -70,6 +92,28 @@ def review_count_for_operations(operations: pd.DataFrame) -> int:
     if operations.empty or "needs_review" not in operations.columns:
         return 0
     return int(operations["needs_review"].fillna(False).astype(bool).sum())
+
+
+def account_type_label(value: str | None) -> str:
+    if value is None or pd.isna(value):
+        return "Не определён"
+    return ACCOUNT_TYPE_LABELS.get(value, "Не определён")
+
+
+def import_status_label(value: str | None) -> str:
+    if value is None or pd.isna(value):
+        return "Не определён"
+    return IMPORT_STATUS_LABELS.get(value, "Не определён")
+
+
+def import_period_display(period_start: str | None, period_end: str | None) -> str:
+    start = "" if period_start is None or pd.isna(period_start) else str(period_start).strip()
+    end = "" if period_end is None or pd.isna(period_end) else str(period_end).strip()
+    if not start and not end:
+        return "не определён"
+    if start and end:
+        return f"{start} — {end}"
+    return start or end
 
 
 def profile_has_plan(profile: dict[str, Any]) -> bool:

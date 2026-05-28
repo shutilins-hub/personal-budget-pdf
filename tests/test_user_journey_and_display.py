@@ -3,20 +3,26 @@ import unittest
 try:
     import pandas as pd
     from ui_flow import (
+        account_type_label,
         build_budget_readiness,
         build_home_primary_action,
         build_home_secondary_actions,
         build_user_journey_steps,
         determine_user_next_step,
+        import_period_display,
+        import_status_label,
         visible_operation_columns,
     )
 except ModuleNotFoundError:
     pd = None
+    account_type_label = None
     build_budget_readiness = None
     build_home_primary_action = None
     build_home_secondary_actions = None
     build_user_journey_steps = None
     determine_user_next_step = None
+    import_period_display = None
+    import_status_label = None
     visible_operation_columns = None
 
 
@@ -97,6 +103,22 @@ class UserJourneyAndDisplayTest(unittest.TestCase):
         actions = build_home_secondary_actions(primary, history, operations, profile)
 
         self.assertNotIn(primary["target"], {action["action_target"] for action in actions})
+
+    def test_account_type_labels_are_human_readable(self):
+        self.assertEqual(account_type_label("debit_account"), "Дебетовая карта")
+        self.assertEqual(account_type_label("credit_card"), "Кредитная карта")
+        self.assertEqual(account_type_label("unknown"), "Не определён")
+        self.assertEqual(account_type_label("new_internal_code"), "Не определён")
+
+    def test_import_status_labels_are_human_readable(self):
+        self.assertEqual(import_status_label("imported"), "Импортировано")
+        self.assertEqual(import_status_label("skipped_irrelevant"), "Пропущено")
+        self.assertEqual(import_status_label("unknown"), "Не определён")
+
+    def test_import_period_display(self):
+        self.assertEqual(import_period_display("", ""), "не определён")
+        self.assertEqual(import_period_display(None, None), "не определён")
+        self.assertEqual(import_period_display("2026-05-01", "2026-05-31"), "2026-05-01 — 2026-05-31")
 
     def test_done_steps_still_have_tabs(self):
         history = pd.DataFrame([operation(False)])
