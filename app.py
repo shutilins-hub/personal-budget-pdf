@@ -54,6 +54,12 @@ from ui.components import (
     render_progress_row,
     render_section_card,
 )
+from ui_flow import (
+    build_user_journey_steps as build_user_journey_steps_core,
+    determine_user_next_step as determine_user_next_step_core,
+    review_count_for_operations,
+    visible_operation_columns,
+)
 from storage import (
     append_profile_rule,
     append_merchant_rule,
@@ -248,6 +254,14 @@ def set_active_tab_from_nav() -> None:
         navigate_to(selected)
 
 
+def determine_user_next_step(history: pd.DataFrame, operations: pd.DataFrame, profile: dict) -> str:
+    return determine_user_next_step_core(history, operations, profile)
+
+
+def build_user_journey_steps(history: pd.DataFrame, operations: pd.DataFrame, profile: dict, active_step: str) -> list[dict]:
+    return build_user_journey_steps_core(history, operations, profile, active_step, profile_identity_needs_attention(profile))
+
+
 def month_label(month_key: str) -> str:
     year, month = [int(part) for part in month_key.split("-")]
     return f"{MONTH_NAMES[month]} {year}"
@@ -285,54 +299,32 @@ def month_progress(start_date: date, end_date: date) -> tuple[int, int]:
 
 
 def render_user_journey(history: pd.DataFrame, operations: pd.DataFrame, profile: dict, active_step: str) -> None:
-    months_count = 0
-    if not history.empty and "operation_datetime" in history.columns:
-        months_count = history["operation_datetime"].astype(str).str[:7].nunique()
-    review_count = int(operations["needs_review"].sum()) if not operations.empty and "needs_review" in operations.columns else 0
-    has_plan = bool(profile.get("auto_plan_accepted") or profile.get("plan_source"))
-    steps = [
-        ("Профиль и загрузка", months_count >= 3),
-        ("Очистка операций", review_count == 0 and not operations.empty),
-        ("План месяца", has_plan),
-        ("Контроль бюджета", has_plan and review_count == 0),
-    ]
-    step_tabs = {
-        "Профиль и загрузка": "Профиль и загрузка",
-        "Очистка операций": "Очистка",
-        "План месяца": "План",
-        "Контроль бюджета": "Контроль",
-    }
-    active_index = next((idx for idx, (title, _) in enumerate(steps) if title == active_step), 0)
+    steps = build_user_journey_steps(history, operations, profile, active_step)
     html = ['<div class="step-strip">']
-    for idx, (title, done) in enumerate(steps):
-        css = "step-done" if done or idx < active_index else ""
-        label = "готово" if done or idx < active_index else "далее"
-        if title == active_step:
-            css = "step-active"
-            label = "активен"
-        html.append(f'<div class="step {css}"><b>{title}</b><div>{label}</div></div>')
+    for step in steps:
+        css = "step-active" if step["status"] == "active" else "step-done" if step["status"] == "done" else ""
+        html.append(f'<div class="step {css}"><b>{step["title"]}</b><div>{step["label"]}</div></div>')
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
     nav_cols = st.columns(4)
-    for idx, (title, _) in enumerate(steps):
-        if title == active_step:
-            nav_cols[idx].button("Вы здесь", key=make_widget_key("journey_nav_current", active_step, title), use_container_width=True, disabled=True)
+    for idx, step in enumerate(steps):
+        if step["title"] == active_step:
+            nav_cols[idx].button("Вы здесь", key=make_widget_key("journey_nav_current", active_step, step["title"]), use_container_width=True, disabled=True)
         else:
+            label = "Продолжить" if step["status"] == "needs_attention" else "Начать" if step["status"] == "not_started" else "Открыть"
             nav_cols[idx].button(
-                "Открыть",
-                key=make_widget_key("journey_nav", active_step, title),
+                label,
+                key=make_widget_key("journey_nav", active_step, step["title"]),
                 use_container_width=True,
                 on_click=navigate_to,
-                args=(step_tabs[title],),
+                args=(step["tab"],),
             )
-    if months_count < 3:
-        st.info("Шаг 1: заполните профиль и загрузите больше выписок. Для автоплана лучше иметь минимум 3–6 месяцев истории.")
-    elif review_count >= 10:
-        st.info("Шаг 2: разберите регулярные переводы и крупные операции.")
-    elif not has_plan:
-        st.info("Шаг 3: рассчитайте и примите план месяца.")
-    else:
-        st.success("Шаг 4: добавляйте новые выписки и следите за фактом.")
+    current = next((step for step in steps if step["title"] == active_step), None)
+    next_step = determine_user_next_step(history, operations, profile)
+    if current:
+        st.caption(current["hint"])
+    if next_step != active_step:
+        st.info(f"Следующий шаг: {next_step}.")
 
 
 def profile_selector() -> dict:
@@ -1368,16 +1360,93 @@ def render_clickable_attention_cards(items: list[dict]) -> None:
 
 def render_home_page(profile: dict, operations: pd.DataFrame, history: pd.DataFrame, plan: pd.DataFrame, report_month: str | None, start_date: date, end_date: date, latest_date: str | None) -> None:
     metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0))
+    health = build_financial_health_report(profile["id"], report_month, operations, plan, profile_income_plan_df(profile)) if report_month else {}
+    data_quality = health.get("data_quality", {})
+    category_risks = health.get("category_risks", [])
+    no_limit_amount = float(data_quality.get("categories_without_limit_amount") or 0)
+    has_plan = bool(profile.get("auto_plan_accepted") or profile.get("plan_source"))
     st.markdown(
         f"""
         <div class="budget-hero">
-            <h1>Бюджет месяца</h1>
+            <h1>Главная</h1>
+            <div class="budget-sub">Профиль: <b>{profile.get('name')}</b> · Месяц: <b>{month_label(report_month) if report_month else 'не выбран'}</b></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    render_user_journey(history, operations, profile, "")
+    st.write("Коротко о состоянии данных и следующем действии. Подробный план-факт находится в разделе “Контроль”.")
+    render_metric_grid(
+        [
+            {"label": "Статус месяца", "value": health.get("month_status", "Нет данных"), "hint": health.get("summary_text", "Загрузите выписки, чтобы увидеть оценку."), "status": "warn" if health.get("severity") in {"warning", "incomplete"} else "danger" if health.get("severity") == "danger" else "good"},
+            {"label": "Качество данных", "value": f"{float(data_quality.get('confidence_score') or 0):.0f}/100" if data_quality else "нет данных", "hint": data_quality.get("status", "Появится после импорта."), "status": "danger" if float(data_quality.get("confidence_score") or 0) < 60 else "warn" if float(data_quality.get("confidence_score") or 0) < 85 else "good"},
+            {"label": "Операций на проверку", "value": str(int(metrics.get("review_count") or 0)), "hint": "Разберите их, чтобы план и баланс стали точнее.", "status": "warn" if metrics.get("review_count") else "good"},
+            {"label": "План месяца", "value": "принят" if has_plan else "не задан", "hint": money(float(profile.get("monthly_limit") or 0)) if has_plan else "Перейдите в План и примите лимиты.", "status": "good" if has_plan else "warn"},
+            {"label": "Расходы без лимита", "value": money(no_limit_amount), "hint": "Назначьте лимит категориям с расходами." if no_limit_amount else "Все видимые расходы привязаны к лимитам.", "status": "warn" if no_limit_amount else "good"},
+            {"label": "Последняя операция", "value": latest_date or "нет данных", "hint": f"Операций в базе: {len(history)}", "status": "good" if latest_date else "warn"},
+        ]
+    )
+    st.subheader("Что сделать дальше")
+    actions: list[dict] = []
+    if history.empty:
+        actions.append({"title": "Загрузить выписки", "text": "Сначала загрузите PDF минимум за 3–6 месяцев.", "severity": "warning", "action_label": "Перейти к загрузке", "action_target": "plan_upload"})
+    if int(metrics.get("review_count") or 0) > 0:
+        actions.append({"title": "Разобрать операции", "text": f"Есть {int(metrics['review_count'])} операций, которые сервис не распознал уверенно.", "severity": "warning", "action_label": "Перейти к очистке", "action_target": "cleanup"})
+    if not has_plan:
+        actions.append({"title": "Принять план", "text": "Без плана сервис не покажет честный остаток по категориям.", "severity": "warning", "action_label": "Перейти к плану", "action_target": "plan"})
+    if no_limit_amount:
+        first_no_limit = next((risk.get("category") for risk in category_risks if risk.get("status") == "no_limit"), None)
+        actions.append({"title": "Назначить лимиты", "text": "В некоторых категориях есть расходы, но лимит не задан.", "severity": "warning", "action_label": "Назначить лимит", "action_target": "plan", "category": first_no_limit})
+    actions.append({"title": "Открыть контроль месяца", "text": "Посмотреть план, факт, остаток, доходы и операции внутри категорий.", "severity": "info", "action_label": "Открыть контроль", "action_target": "control"})
+    for index, action in enumerate(actions[:5]):
+        render_home_action_card(action, index)
+
+
+def handle_home_action(action: dict) -> None:
+    target = action.get("action_target")
+    if target == "plan_upload":
+        navigate_to("Профиль и загрузка")
+    elif target == "cleanup":
+        navigate_to_review()
+    elif target == "plan":
+        navigate_to("План")
+    elif target == "control":
+        navigate_to("Контроль")
+    elif target == "category":
+        if action.get("category"):
+            set_focus_category(str(action["category"]))
+        navigate_to("Контроль")
+
+
+def render_home_action_card(action: dict, index: int) -> None:
+    severity = action.get("severity", "info")
+    st.markdown(
+        f'<div class="attention-action-card status-{severity}">'
+        f'<div class="attention-action-title">{action.get("title", "")}</div>'
+        f'<div class="attention-action-text">{action.get("text", "")}</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.button(
+        action.get("action_label", "Открыть"),
+        key=make_widget_key("home_action", index, action.get("title"), action.get("action_target")),
+        on_click=handle_home_action,
+        args=(action,),
+    )
+
+
+def render_control_dashboard(profile: dict, operations: pd.DataFrame, history: pd.DataFrame, plan: pd.DataFrame, report_month: str | None, start_date: date, end_date: date, latest_date: str | None) -> None:
+    metrics = dashboard_metrics(operations, profile.get("monthly_limit", 0))
+    st.markdown(
+        f"""
+        <div class="budget-hero">
+            <h1>Контроль бюджета</h1>
             <div class="budget-sub">Профиль: <b>{profile.get('name')}</b> · Месяц: <b>{month_label(report_month) if report_month else 'не выбран'}</b></div>
         </div>
         """,
         unsafe_allow_html=True,
     )
     render_user_journey(history, operations, profile, "Контроль бюджета")
+    st.write("Здесь видно, как идёт выбранный месяц: план, факт, остаток, доходы, баланс и операции внутри категорий.")
     render_budget_overview_primary(metrics, start_date, end_date)
     render_budget_overview_secondary(profile, operations, history, report_month, metrics)
     st.markdown(
@@ -1870,37 +1939,8 @@ def profile_income_plan_df(profile: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def display_operations(operations: pd.DataFrame) -> pd.DataFrame:
-    columns = {
-        "operation_datetime": "дата",
-        "bank": "банк",
-        "document_type": "тип документа",
-        "account_type": "тип счёта",
-        "account_role": "роль счёта",
-        "account_id": "account id",
-        "raw_category": "категория банка",
-        "merchant_anchor": "merchant",
-        "person_anchor": "человек",
-        "description": "описание",
-        "bank_amount": "сумма",
-        "direction": "направление",
-        "cashflow_amount": "движение по счёту",
-        "operation_type": "тип",
-        "budget_category": "категория",
-        "personal_amount": "личная сумма",
-        "budget_amount": "сумма факта",
-        "planning_amount": "сумма для плана",
-        "debt_amount": "сумма долга",
-        "debt_type": "тип долга",
-        "count_in_plan": "в плане",
-        "plan_category": "категория плана",
-        "plan_exclusion_reason": "почему не в плане",
-        "confidence": "уверенность",
-        "classification_source": "источник",
-        "duplicate_key": "ключ дубля",
-        "linked_operation_id": "связана с",
-        "needs_review": "проверить",
-    }
+def display_operations(operations: pd.DataFrame, include_technical: bool = False) -> pd.DataFrame:
+    columns = visible_operation_columns(include_technical)
     existing = [column for column in columns if column in operations.columns]
     return operations[existing].rename(columns=columns)
 
@@ -2851,6 +2891,7 @@ def render_candidate_rule_form(
 
 def render_cleanup_page(profile: dict, operations: pd.DataFrame, history: pd.DataFrame, report_month: str | None) -> None:
     render_user_journey(history, operations, profile, "Очистка операций")
+    st.write("Здесь нужно разобрать не каждую строку, а группы переводов и операций, которые влияют на план и баланс.")
     if not report_month or history.empty:
         st.info("Сначала загрузите историю. После импорта здесь появятся группы операций для разбора.")
         return
@@ -2909,6 +2950,7 @@ def render_cleanup_page(profile: dict, operations: pd.DataFrame, history: pd.Dat
 
 def render_simplified_plan_tab(profile: dict, history: pd.DataFrame, report_month: str | None) -> None:
     render_user_journey(history, pd.DataFrame(), profile, "План месяца")
+    st.write("Здесь можно принять рекомендованный план или вручную поправить лимиты по категориям.")
     if not report_month:
         st.info("Сначала импортируйте операции, чтобы выбрать месяц отчёта.")
         return
@@ -3770,6 +3812,7 @@ def profile_identity_needs_attention(profile: dict) -> bool:
 
 def render_profile_and_upload_page(profile: dict, history: pd.DataFrame, operations: pd.DataFrame, start_date: date, end_date: date) -> None:
     render_user_journey(history, operations, profile, "Профиль и загрузка")
+    st.write("Сначала заполните данные профиля и загрузите PDF-выписки. Это помогает отличать свои переводы от доходов и расходов.")
     if profile_identity_needs_attention(profile):
         st.info("Заполните данные профиля, чтобы сервис мог отличать переводы самому себе от доходов и расходов.")
     render_profile_settings_tab(profile)
@@ -3786,7 +3829,7 @@ def render_control_page(profile: dict, operations: pd.DataFrame, history: pd.Dat
             st.info("Нет операций. Начните с раздела “Профиль и загрузка”.")
         else:
             st.info("В базе есть операции, но за выбранный период ничего не найдено. Проверьте месяц отчёта.")
-    render_home_page(profile, operations, history, plan, report_month, start_date, end_date, latest_date)
+    render_control_dashboard(profile, operations, history, plan, report_month, start_date, end_date, latest_date)
     render_income_section(profile, operations)
     render_operation_reassignment_section(profile, operations)
     with st.expander("Список операций месяца"):
@@ -3843,11 +3886,11 @@ def main() -> None:
         f"Операций в месяце: {len(operations)} · Операций в базе: {len(history)} · "
         f"Последняя дата операции: {latest_date or 'нет данных'}"
     )
-    nav_tabs = ["Профиль и загрузка", "Очистка", "План", "Контроль", "Правила", "Диагностика"]
+    nav_tabs = ["Главная", "Профиль и загрузка", "Очистка", "План", "Контроль", "Правила", "Диагностика"]
     if st.session_state.pop("active_page_after_import", None) == "Очистка":
         st.session_state["active_tab"] = "Очистка"
     if "active_tab" not in st.session_state or st.session_state["active_tab"] not in nav_tabs:
-        st.session_state["active_tab"] = "Контроль" if not history.empty else "Профиль и загрузка"
+        st.session_state["active_tab"] = "Главная" if not history.empty else "Профиль и загрузка"
     if st.session_state.get("nav_selected_tab") != st.session_state["active_tab"]:
         st.session_state["nav_selected_tab"] = st.session_state["active_tab"]
     selected_tab = st.radio(
@@ -3858,7 +3901,9 @@ def main() -> None:
         label_visibility="collapsed",
         on_change=set_active_tab_from_nav,
     )
-    if selected_tab == "Профиль и загрузка":
+    if selected_tab == "Главная":
+        render_home_page(profile, operations, history, plan, report_month, start_date, end_date, latest_date)
+    elif selected_tab == "Профиль и загрузка":
         render_profile_and_upload_page(profile, history, operations, start_date, end_date)
         refreshed_operations = operations_df(profile["id"], start_date, end_date)
         if st.session_state.get("last_import_summary") and len(refreshed_operations) != len(operations):
@@ -3875,7 +3920,7 @@ def main() -> None:
         st.session_state["_diagnostics_profile"] = profile
         render_diagnostics_tab(operations)
         st.subheader("Все операции")
-        st.dataframe(display_operations(operations), use_container_width=True, hide_index=True)
+        st.dataframe(display_operations(operations, include_technical=True), use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
