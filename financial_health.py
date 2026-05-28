@@ -87,6 +87,11 @@ def _category_risks(operations: pd.DataFrame, plan: pd.DataFrame) -> tuple[list[
                 message = "Категория в норме."
         is_review_category = category in {"Прочее / проверить", "Неразобранные переводы / проверить", "Переводы, которые нужно уточнить"}
         if status in {"overspent", "near_limit"} or (status == "no_limit" and fact > 3000) or is_review_category:
+            risk_status = status
+            risk_message = message
+            if is_review_category and status != "no_limit":
+                risk_status = "needs_review"
+                risk_message = "В категории есть операции, которые лучше уточнить."
             risks.append(
                 {
                     "category": category,
@@ -94,8 +99,8 @@ def _category_risks(operations: pd.DataFrame, plan: pd.DataFrame) -> tuple[list[
                     "plan": limit,
                     "usage_percent": fact / limit if limit else None,
                     "remaining": limit - fact,
-                    "status": status if not is_review_category else "needs_review",
-                    "message": message if not is_review_category else "В категории есть операции, которые лучше уточнить.",
+                    "status": risk_status,
+                    "message": risk_message,
                 }
             )
     risk_order = {"overspent": 0, "needs_review": 1, "near_limit": 2, "no_limit": 3, "ok": 4}
@@ -180,6 +185,7 @@ def build_financial_health_report(
         review_amount = 0.0
         unresolved_transfers_amount = 0.0
         income_unknown_amount = 0.0
+        outgoing_cashflow_like_amount = 0.0
     else:
         review_mask = operations.get("needs_review", pd.Series(False, index=operations.index)).fillna(False).astype(bool)
         review_count = int(review_mask.sum())
@@ -196,15 +202,30 @@ def build_financial_health_report(
         unresolved_transfers_amount = float(amount_abs[unresolved_mask].sum())
         income_unknown_mask = direction.isin(["income", "incoming"]) & (operation_type.eq("Проверить") | review_mask)
         income_unknown_amount = float(amount_abs[income_unknown_mask].sum())
+        excluded_types = {"Внутренний перевод", "Проектный оборот", "Не учитывать"}
+        outgoing_cashflow_like_amount = float(amount_abs[direction.isin(["expense", "outgoing"]) & ~operation_type.isin(excluded_types)].sum())
 
     confidence_score = 100
-    if clean_expenses and unresolved_transfers_amount > clean_expenses * 0.2:
+    quality_basis = max(clean_expenses, gross_expenses, outgoing_cashflow_like_amount, review_amount, 1.0)
+    if month_plan <= 0:
+        confidence_score -= 25
+    if personal_income <= 0:
+        confidence_score -= 10
+    if review_count > 0:
+        confidence_score -= 10
+    if review_amount > quality_basis * 0.2:
+        confidence_score -= 20
+    if review_amount > quality_basis * 0.5:
+        confidence_score -= 15
+    if unresolved_transfers_amount > quality_basis * 0.2:
         confidence_score -= 20
     if review_count > 20:
         confidence_score -= 45
     if income_unknown_amount > 0:
-        confidence_score -= 15
+        confidence_score -= 20
     if categories_without_limit_amount > 0:
+        confidence_score -= 10
+    if clean_expenses and categories_without_limit_amount > clean_expenses * 0.2:
         confidence_score -= 10
     owner_mismatch_files_count = 0
     confidence_score = max(0, min(100, confidence_score))
@@ -215,6 +236,7 @@ def build_financial_health_report(
         "unresolved_transfers_amount": unresolved_transfers_amount,
         "income_unknown_amount": income_unknown_amount,
         "categories_without_limit_amount": categories_without_limit_amount,
+        "outgoing_cashflow_like_amount": outgoing_cashflow_like_amount,
         "owner_mismatch_files_count": owner_mismatch_files_count,
         "duplicate_skipped_count": 0,
         "confidence_score": confidence_score,
@@ -232,6 +254,59 @@ def build_financial_health_report(
                 "cleanup",
             )
         )
+    if unresolved_transfers_amount > max(clean_expenses, gross_expenses, 1.0) * 0.2:
+        recommendations.append(
+            _recommendation(
+                "Разберите неясные списания",
+                f"На проверке исходящие операции примерно на {unresolved_transfers_amount:,.0f} ₽. Они могут менять план и факт месяца.".replace(",", " "),
+                "warning",
+                "Перейти к очистке",
+                "cleanup",
+            )
+        )
+    if income_unknown_amount > 0:
+        recommendations.append(
+            _recommendation(
+                "Проверьте поступления",
+                f"Есть входящие операции на {income_unknown_amount:,.0f} ₽, которые неясно учитывать как доход или перевод.".replace(",", " "),
+                "warning",
+                "Проверить доходы",
+                "income",
+            )
+        )
+    if month_plan <= 0:
+        recommendations.append(
+            _recommendation(
+                "Задайте план месяца",
+                "Без плана сервис не может честно оценить темп расходов и остаток до конца месяца.",
+                "warning",
+                "Перейти к плану",
+                "plan",
+            )
+        )
+    if personal_income <= 0 and income_unknown_amount <= 0:
+        recommendations.append(
+            _recommendation(
+                "Проверьте доходы месяца",
+                "Личные доходы пока не определены, поэтому баланс месяца может быть неполным.",
+                "info",
+                "Проверить доходы",
+                "income",
+            )
+        )
+    for risk in category_risks:
+        if risk["status"] == "no_limit":
+            recommendations.append(
+                _recommendation(
+                    "Есть расходы без лимита",
+                    f"В категории {risk['category']} есть расходы, но лимит не задан.",
+                    "warning",
+                    "Назначить лимит",
+                    "plan",
+                    category=risk["category"],
+                )
+            )
+            break
     for risk in category_risks[:3]:
         if risk["status"] == "overspent":
             recommendations.append(
@@ -241,17 +316,6 @@ def build_financial_health_report(
                     "danger",
                     "Открыть категорию",
                     "category",
-                    category=risk["category"],
-                )
-            )
-        elif risk["status"] == "no_limit":
-            recommendations.append(
-                _recommendation(
-                    "Есть расходы без лимита",
-                    f"В категории {risk['category']} есть расходы, но лимит не задан.",
-                    "warning",
-                    "Назначить лимит",
-                    "plan",
                     category=risk["category"],
                 )
             )
@@ -280,6 +344,9 @@ def build_financial_health_report(
     if confidence_score < 60:
         month_status = "Расчёт неполный"
         severity = "incomplete"
+    elif confidence_score < 85:
+        month_status = "Расчёт предварительный"
+        severity = "warning"
     elif month_plan and clean_expenses > month_plan:
         month_status = "Перерасход"
         severity = "danger"
@@ -292,8 +359,22 @@ def build_financial_health_report(
     else:
         month_status = "В норме"
         severity = "good"
-    if confidence_score < 60:
-        summary_text = "Расчёт предварительный: сначала уточните операции."
+    if month_plan <= 0:
+        summary_text = "План месяца не задан, темп расходов оценивается ограниченно."
+    elif confidence_score < 60:
+        if income_unknown_amount > 0:
+            summary_text = "Расчёт предварительный: доходы месяца требуют проверки, поэтому баланс может быть неточным."
+        else:
+            summary_text = "Расчёт предварительный: сначала разберите операции на проверку."
+    elif confidence_score < 85:
+        if income_unknown_amount > 0:
+            summary_text = "Расчёт предварительный: доходы месяца требуют проверки, поэтому баланс может быть неточным."
+        elif categories_without_limit_amount > 0:
+            summary_text = "Расчёт предварительный: есть расходы без лимита, план месяца может быть занижен."
+        elif review_count > 0:
+            summary_text = "Расчёт предварительный: часть операций ещё нужно уточнить."
+        else:
+            summary_text = "Расчёт предварительный: качество данных пока не идеальное."
     else:
         summary_text = (
             f"Прошло {month_progress:.0%} месяца, использовано "
