@@ -12,6 +12,7 @@ import storage
 from bank_adapters import detect_document_type, link_internal_transfers, parse_by_document_type
 from budget_engine import dashboard_metrics, financial_health_assessment, income_plan_fact, plan_fact
 from classifier import build_rule_from_operation, classify_operations, rule_matches
+from debug_exports import debug_exports_enabled
 from financial_health import build_financial_health_report
 from pdf_parser import detect_bank, extract_text_from_uploaded_pdf, parse_text
 from privacy import sanitize_text
@@ -587,7 +588,8 @@ def import_pdfs(profile: dict, uploaded_files: list, start_date: date, end_date:
                     "first_30_lines": [sanitize_text(line) for line in text.splitlines()[:30]],
                 }
             )
-            all_text_parts.append(f"===== {source_file} | skipped_irrelevant =====\n{text}")
+            if debug_exports_enabled():
+                all_text_parts.append(f"===== {source_file} | skipped_irrelevant =====\n{text}")
             continue
         bank = detection.get("bank") if detection.get("confidence", 0) >= 0.5 else detect_bank(text)
         metadata.update(
@@ -633,7 +635,8 @@ def import_pdfs(profile: dict, uploaded_files: list, start_date: date, end_date:
         total_inserted += stats["inserted"]
         total_duplicates += stats["duplicates"]
         total_filtered += stats["filtered"]
-        all_text_parts.append(f"===== {source_file} | {bank} =====\n{text}")
+        if debug_exports_enabled():
+            all_text_parts.append(f"===== {source_file} | {bank} =====\n{text}")
         all_parsed.extend(classified)
         file_summaries.append(
             {
@@ -1684,7 +1687,7 @@ def suggest_category_for_operation(operation: dict, profile: dict) -> dict:
         )
     )
     for rule in profile.get("merchant_rules", []) or []:
-        if rule.get("enabled", True) and rule_matches(rule, operation):
+        if rule.get("enabled", True) and rule_matches(operation, rule):
             return {
                 "suggested_category": rule.get("budget_category") or rule.get("plan_category") or "Прочее / проверить",
                 "confidence": rule.get("confidence", 0.95),

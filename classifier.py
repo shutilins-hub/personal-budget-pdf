@@ -142,9 +142,10 @@ def rule_matches(operation: dict[str, Any], rule: dict[str, Any]) -> bool:
         return False
     text = searchable_text(operation)
     amount = float(operation.get("bank_amount") or 0)
+    operation_direction_value = normalized_direction(operation.get("direction"), amount)
     if rule.get("bank") and normalize(rule["bank"]) != normalize(operation.get("bank", "")):
         return False
-    if rule.get("direction") and normalized_direction(rule["direction"]) != operation.get("direction"):
+    if rule.get("direction") and normalized_direction(rule["direction"]) != operation_direction_value:
         return False
     if rule.get("merchant_anchor") and normalize(rule["merchant_anchor"]) != normalize(operation.get("merchant_anchor", "")):
         return False
@@ -212,6 +213,33 @@ def global_merchant_rules() -> list[dict[str, Any]]:
         rule.setdefault("direction", "expense")
         rule.setdefault("confidence", 0.9)
     return rules
+
+
+def suggest_category_for_operation(operation: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    for rule in profile.get("merchant_rules", []) or []:
+        if rule.get("enabled", True) and rule_matches(operation, rule):
+            return {
+                "suggested_category": rule.get("budget_category") or rule.get("plan_category") or REVIEW_CATEGORY,
+                "confidence": rule.get("confidence", 0.95),
+                "source": "personal_rule",
+                "reason": "Совпало личное правило профиля",
+            }
+    text = searchable_text(operation)
+    for rule in global_merchant_rules():
+        patterns = rule.get("patterns") or rule.get("contains_any") or []
+        if any(normalize(pattern) in text for pattern in patterns):
+            return {
+                "suggested_category": rule.get("category") or rule.get("budget_category") or REVIEW_CATEGORY,
+                "confidence": rule.get("confidence", 0.9),
+                "source": "global_merchant_rule",
+                "reason": "Совпало правило глобального справочника",
+            }
+    return {
+        "suggested_category": REVIEW_CATEGORY,
+        "confidence": 0.2,
+        "source": "fallback",
+        "reason": "Нет подходящего правила",
+    }
 
 
 def bank_category_map() -> dict[str, Any]:
