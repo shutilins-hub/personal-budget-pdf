@@ -61,6 +61,28 @@ APP_CSS = """
     .step { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 18px; padding: 12px 14px; color: #6b7280; }
     .step-active { color: #111827; border-color: #111827; }
     .step-done { color: #166534; border-color: #bbf7d0; }
+    .home-status-card {
+        background: #ffffff; border: 1px solid #fde68a; border-radius: 24px;
+        padding: 24px; box-shadow: 0 16px 40px rgba(17, 24, 39, .07); margin: 14px 0 16px;
+    }
+    .home-status-card.status-good { border-color: #bbf7d0; }
+    .home-status-card.status-danger { border-color: #fecaca; }
+    .home-status-label { color: #64748b; font-size: 14px; margin-bottom: 8px; }
+    .home-status-title { color: #111827; font-size: 32px; line-height: 1.15; font-weight: 850; letter-spacing: -0.03em; }
+    .home-status-text { color: #64748b; font-size: 16px; margin-top: 10px; }
+    .readiness-card {
+        background: #ffffff; border: 1px solid #e5e7eb; border-radius: 22px;
+        padding: 18px; box-shadow: 0 12px 30px rgba(17, 24, 39, .05); margin: 10px 0 18px;
+    }
+    .readiness-row { display: grid; grid-template-columns: 28px 1.2fr .8fr 1.4fr; gap: 10px; padding: 9px 0; border-bottom: 1px solid #f1f5f9; align-items: baseline; }
+    .readiness-row:last-child { border-bottom: 0; }
+    .readiness-icon { font-weight: 850; }
+    .readiness-title { font-weight: 750; color: #111827; }
+    .readiness-label { color: #64748b; }
+    .readiness-detail { color: #64748b; }
+    .readiness-done .readiness-icon { color: #15803d; }
+    .readiness-needs_attention .readiness-icon { color: #ca8a04; }
+    .readiness-not_started .readiness-icon { color: #94a3b8; }
     .attention-card { margin: 8px 0; }
     .attention-title { font-weight: 750; margin-bottom: 4px; }
     .attention-text { color: #6b7280; }
@@ -93,7 +115,7 @@ APP_CSS = """
     .category-warn .bar div { background: #d97706; }
     .category-review .bar div { background: #ca8a04; }
     .category-nolimit .bar div { background: #9ca3af; }
-    @media (max-width: 900px) { .metric-grid, .primary-grid, .secondary-grid, .step-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 900px) { .metric-grid, .primary-grid, .secondary-grid, .step-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } .readiness-row { grid-template-columns: 24px 1fr; } .readiness-label, .readiness-detail { grid-column: 2; } }
     @media (max-width: 560px) { .metric-grid, .primary-grid, .secondary-grid, .step-strip { grid-template-columns: 1fr; } .progress-top { display:block; } }
 </style>
 """

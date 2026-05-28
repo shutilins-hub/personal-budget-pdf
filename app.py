@@ -56,6 +56,9 @@ from ui.components import (
     render_section_card,
 )
 from ui_flow import (
+    build_budget_readiness as build_budget_readiness_core,
+    build_home_primary_action as build_home_primary_action_core,
+    build_home_secondary_actions as build_home_secondary_actions_core,
     build_user_journey_steps as build_user_journey_steps_core,
     determine_user_next_step as determine_user_next_step_core,
     review_count_for_operations,
@@ -286,6 +289,10 @@ def build_user_journey_steps(history: pd.DataFrame, operations: pd.DataFrame, pr
     return build_user_journey_steps_core(history, operations, profile, active_step, profile_identity_needs_attention(profile))
 
 
+def build_budget_readiness(history: pd.DataFrame, operations: pd.DataFrame, profile: dict) -> list[dict]:
+    return build_budget_readiness_core(history, operations, profile, profile_identity_needs_attention(profile))
+
+
 def month_label(month_key: str) -> str:
     year, month = [int(part) for part in month_key.split("-")]
     return f"{MONTH_NAMES[month]} {year}"
@@ -391,10 +398,13 @@ def render_sidebar(profile: dict, operations: pd.DataFrame, history: pd.DataFram
         f"В месяце: {len(operations)} операций · На проверку: {int(metrics['review_count'])} · "
         f"Осталось: {money(metrics['limit_left'])}"
     )
-    if st.sidebar.button("Настройки профиля", use_container_width=True):
-        st.session_state["open_profile_settings_hint"] = True
-    if st.session_state.get("open_profile_settings_hint"):
-        st.sidebar.info("Настройки профиля теперь находятся во вкладке “Профиль”.")
+    st.sidebar.button(
+        "Настройки профиля",
+        use_container_width=True,
+        on_click=navigate_to,
+        args=("Профиль и загрузка",),
+        key=make_widget_key("sidebar_profile_settings", profile["id"]),
+    )
     with st.sidebar.expander("Опасная зона"):
         st.caption("Удаляет только операции текущего профиля. Профиль, план и правила останутся.")
         confirm_clear = st.checkbox(
@@ -1420,7 +1430,9 @@ def render_home_page(profile: dict, operations: pd.DataFrame, history: pd.DataFr
     data_quality = health.get("data_quality", {})
     category_risks = health.get("category_risks", [])
     no_limit_amount = float(data_quality.get("categories_without_limit_amount") or 0)
-    has_plan = bool(profile.get("auto_plan_accepted") or profile.get("plan_source"))
+    primary_action = build_home_primary_action_core(history, operations, profile)
+    readiness = build_budget_readiness(history, operations, profile)
+    secondary_actions = build_home_secondary_actions_core(primary_action, history, operations, profile)
     st.markdown(
         f"""
         <div class="budget-hero">
@@ -1430,48 +1442,38 @@ def render_home_page(profile: dict, operations: pd.DataFrame, history: pd.DataFr
         """,
         unsafe_allow_html=True,
     )
-    render_user_journey(history, operations, profile, "")
-    st.write("Коротко о состоянии данных и следующем действии. Подробный план-факт находится в разделе “Контроль”.")
-    render_metric_grid(
-        [
-            {"label": "Статус месяца", "value": health.get("month_status", "Нет данных"), "hint": health.get("summary_text", "Загрузите выписки, чтобы увидеть оценку."), "status": "warn" if health.get("severity") in {"warning", "incomplete"} else "danger" if health.get("severity") == "danger" else "good"},
-            {"label": "Качество данных", "value": f"{float(data_quality.get('confidence_score') or 0):.0f}/100" if data_quality else "нет данных", "hint": data_quality.get("status", "Появится после импорта."), "status": "danger" if float(data_quality.get("confidence_score") or 0) < 60 else "warn" if float(data_quality.get("confidence_score") or 0) < 85 else "good"},
-            {"label": "Операций на проверку", "value": str(int(metrics.get("review_count") or 0)), "hint": "Разберите их, чтобы план и баланс стали точнее.", "status": "warn" if metrics.get("review_count") else "good"},
-            {"label": "План месяца", "value": "принят" if has_plan else "не задан", "hint": money(float(profile.get("monthly_limit") or 0)) if has_plan else "Перейдите в План и примите лимиты.", "status": "good" if has_plan else "warn"},
-            {"label": "Расходы без лимита", "value": money(no_limit_amount), "hint": "Назначьте лимит категориям с расходами." if no_limit_amount else "Все видимые расходы привязаны к лимитам.", "status": "warn" if no_limit_amount else "good"},
-            {"label": "Последняя операция", "value": latest_date or "нет данных", "hint": f"Операций в базе: {len(history)}", "status": "good" if latest_date else "warn"},
-        ]
-    )
-    st.subheader("Что сделать дальше")
-    actions: list[dict] = []
-    if history.empty:
-        actions.append({"title": "Загрузить выписки", "text": "Сначала загрузите PDF минимум за 3–6 месяцев.", "severity": "warning", "action_label": "Перейти к загрузке", "action_target": "plan_upload"})
-    if int(metrics.get("review_count") or 0) > 0:
-        actions.append({"title": "Разобрать операции", "text": f"Есть {int(metrics['review_count'])} операций, которые сервис не распознал уверенно.", "severity": "warning", "action_label": "Перейти к очистке", "action_target": "cleanup"})
-    if not has_plan:
-        actions.append({"title": "Принять план", "text": "Без плана сервис не покажет честный остаток по категориям.", "severity": "warning", "action_label": "Перейти к плану", "action_target": "plan"})
+    render_home_status(primary_action)
+    render_budget_readiness_status(readiness)
+    st.caption("Подробный план-факт, категории и операции находятся в разделе “Контроль”.")
+    render_compact_home_metrics(metrics, profile, operations, history, latest_date, data_quality, no_limit_amount)
     if no_limit_amount:
         first_no_limit = next((risk.get("category") for risk in category_risks if risk.get("status") == "no_limit"), None)
-        actions.append({"title": "Назначить лимиты", "text": "В некоторых категориях есть расходы, но лимит не задан.", "severity": "warning", "action_label": "Назначить лимит", "action_target": "plan", "category": first_no_limit})
-    actions.append({"title": "Открыть контроль месяца", "text": "Посмотреть план, факт, остаток, доходы и операции внутри категорий.", "severity": "info", "action_label": "Открыть контроль", "action_target": "control"})
-    for index, action in enumerate(actions[:5]):
+        if first_no_limit and not any(action.get("action_target") == "План" for action in secondary_actions):
+            secondary_actions.insert(
+                0,
+                {
+                    "title": "Назначить лимиты",
+                    "text": "В некоторых категориях есть расходы, но лимит не задан.",
+                    "action_label": "Открыть план",
+                    "action_target": "План",
+                },
+            )
+    if secondary_actions:
+        st.subheader("Другие действия")
+    for index, action in enumerate(secondary_actions[:3]):
         render_home_action_card(action, index)
 
 
 def handle_home_action(action: dict) -> None:
     target = action.get("action_target")
-    if target == "plan_upload":
-        navigate_to("Профиль и загрузка")
-    elif target == "cleanup":
+    if target == "Очистка":
         navigate_to_review()
-    elif target == "plan":
-        navigate_to("План")
-    elif target == "control":
-        navigate_to("Контроль")
     elif target == "category":
         if action.get("category"):
             set_focus_category(str(action["category"]))
         navigate_to("Контроль")
+    elif target:
+        navigate_to(str(target))
 
 
 def render_home_action_card(action: dict, index: int) -> None:
@@ -1488,6 +1490,96 @@ def render_home_action_card(action: dict, index: int) -> None:
         on_click=handle_home_action,
         args=(action,),
     )
+
+
+def handle_home_navigation_action(target: str) -> None:
+    if target == "Очистка":
+        navigate_to_review()
+    else:
+        navigate_to(target)
+
+
+def render_home_status(primary_action: dict) -> None:
+    severity = primary_action.get("severity", "warning")
+    status_class = "good" if severity == "good" else "danger" if severity == "danger" else "warn"
+    st.markdown(
+        f"""
+        <div class="home-status-card status-{status_class}">
+            <div class="home-status-label">Главный следующий шаг</div>
+            <div class="home-status-title">{primary_action.get("status", "")}</div>
+            <div class="home-status-text">{primary_action.get("text", "")}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.button(
+        primary_action.get("label", "Продолжить"),
+        key=make_widget_key("home_primary_cta", primary_action.get("target"), primary_action.get("status")),
+        type="primary",
+        on_click=handle_home_navigation_action,
+        args=(primary_action.get("target", "Контроль"),),
+    )
+
+
+def render_budget_readiness_status(readiness: list[dict]) -> None:
+    icon_by_status = {"done": "✓", "needs_attention": "!", "not_started": "·"}
+    rows = ['<div class="readiness-card"><b>Готовность бюджета</b>']
+    for item in readiness:
+        status = item.get("status", "not_started")
+        rows.append(
+            f'<div class="readiness-row readiness-{status}">'
+            f'<div class="readiness-icon">{icon_by_status.get(status, "·")}</div>'
+            f'<div class="readiness-title">{item.get("title", "")}</div>'
+            f'<div class="readiness-label">{item.get("label", "")}</div>'
+            f'<div class="readiness-detail">{item.get("detail", "")}</div>'
+            f'</div>'
+        )
+    rows.append("</div>")
+    st.markdown("".join(rows), unsafe_allow_html=True)
+
+
+def render_compact_home_metrics(metrics: dict, profile: dict, operations: pd.DataFrame, history: pd.DataFrame, latest_date: str | None, data_quality: dict, no_limit_amount: float) -> None:
+    has_plan = bool(profile.get("auto_plan_accepted") or profile.get("plan_source"))
+    confidence = data_quality.get("confidence_score")
+    metric_items = [
+        {
+            "label": "Качество данных",
+            "value": f"{float(confidence):.0f}/100" if confidence is not None else "нет данных",
+            "hint": data_quality.get("status", "Появится после импорта."),
+            "status": "danger" if confidence is not None and float(confidence) < 60 else "warn" if confidence is not None and float(confidence) < 85 else "good",
+        },
+        {
+            "label": "Операций на проверку",
+            "value": str(int(metrics.get("review_count") or 0)),
+            "hint": "Влияют на точность плана и баланса.",
+            "status": "warn" if metrics.get("review_count") else "good",
+        },
+        {
+            "label": "План месяца",
+            "value": "принят" if has_plan else "не задан",
+            "hint": money(float(profile.get("monthly_limit") or 0)) if has_plan else "Нужно принять или задать лимиты.",
+            "status": "good" if has_plan else "warn",
+        },
+        {
+            "label": "Последняя операция",
+            "value": latest_date or "нет данных",
+            "hint": f"Операций в базе: {len(history)}",
+            "status": "good" if latest_date else "warn",
+        },
+        {
+            "label": "Расходы без лимита",
+            "value": money(no_limit_amount),
+            "hint": "Есть категории с расходами без плана." if no_limit_amount else "Лимиты заданы для видимых расходов.",
+            "status": "warn" if no_limit_amount else "good",
+        },
+        {
+            "label": "Операций в месяце",
+            "value": str(len(operations)),
+            "hint": "Для выбранного периода.",
+            "status": "good",
+        },
+    ]
+    render_metric_grid(metric_items)
 
 
 def render_control_dashboard(profile: dict, operations: pd.DataFrame, history: pd.DataFrame, plan: pd.DataFrame, report_month: str | None, start_date: date, end_date: date, latest_date: str | None) -> None:

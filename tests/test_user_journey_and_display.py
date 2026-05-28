@@ -2,9 +2,19 @@ import unittest
 
 try:
     import pandas as pd
-    from ui_flow import build_user_journey_steps, determine_user_next_step, visible_operation_columns
+    from ui_flow import (
+        build_budget_readiness,
+        build_home_primary_action,
+        build_home_secondary_actions,
+        build_user_journey_steps,
+        determine_user_next_step,
+        visible_operation_columns,
+    )
 except ModuleNotFoundError:
     pd = None
+    build_budget_readiness = None
+    build_home_primary_action = None
+    build_home_secondary_actions = None
     build_user_journey_steps = None
     determine_user_next_step = None
     visible_operation_columns = None
@@ -35,24 +45,58 @@ class UserJourneyAndDisplayTest(unittest.TestCase):
 
     def test_next_step_without_history_is_upload(self):
         self.assertEqual(determine_user_next_step(pd.DataFrame(), pd.DataFrame(), {}), "Профиль и загрузка")
+        action = build_home_primary_action(pd.DataFrame(), pd.DataFrame(), {})
+        self.assertEqual(action["target"], "Профиль и загрузка")
+        self.assertEqual(action["label"], "Загрузить выписки")
 
     def test_next_step_with_review_is_cleanup(self):
         history = pd.DataFrame([operation(needs_review=True)])
         operations = pd.DataFrame([operation(needs_review=True)])
 
         self.assertEqual(determine_user_next_step(history, operations, {"plan_source": "auto_plan"}), "Очистка операций")
+        action = build_home_primary_action(history, operations, {"plan_source": "auto_plan"})
+        self.assertEqual(action["target"], "Очистка")
+        self.assertIn("Нужно уточнить", action["status"])
 
     def test_next_step_without_plan_is_plan(self):
         history = pd.DataFrame([operation(False)])
         operations = pd.DataFrame([operation(False)])
 
         self.assertEqual(determine_user_next_step(history, operations, {}), "План месяца")
+        action = build_home_primary_action(history, operations, {})
+        self.assertEqual(action["target"], "План")
+        self.assertEqual(action["label"], "Перейти к плану")
 
     def test_next_step_with_clean_data_and_plan_is_control(self):
         history = pd.DataFrame([operation(False)])
         operations = pd.DataFrame([operation(False)])
 
         self.assertEqual(determine_user_next_step(history, operations, {"plan_source": "auto_plan"}), "Контроль бюджета")
+        action = build_home_primary_action(history, operations, {"plan_source": "auto_plan"})
+        self.assertEqual(action["target"], "Контроль")
+        self.assertEqual(action["label"], "Открыть контроль")
+
+    def test_budget_readiness_reports_stage_statuses(self):
+        history = pd.DataFrame([operation(False)])
+        operations = pd.DataFrame([operation(needs_review=True)])
+
+        readiness = build_budget_readiness(history, operations, {"plan_source": "auto_plan"})
+        statuses = {item["title"]: item["status"] for item in readiness}
+
+        self.assertEqual(statuses["Данные загружены"], "done")
+        self.assertEqual(statuses["Очистка операций"], "needs_attention")
+        self.assertEqual(statuses["План принят"], "done")
+        self.assertEqual(statuses["Контроль доступен"], "done")
+
+    def test_home_secondary_actions_do_not_duplicate_primary_target(self):
+        history = pd.DataFrame([operation(False)])
+        operations = pd.DataFrame([operation(False)])
+        profile = {"plan_source": "auto_plan"}
+        primary = build_home_primary_action(history, operations, profile)
+
+        actions = build_home_secondary_actions(primary, history, operations, profile)
+
+        self.assertNotIn(primary["target"], {action["action_target"] for action in actions})
 
     def test_done_steps_still_have_tabs(self):
         history = pd.DataFrame([operation(False)])
