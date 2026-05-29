@@ -75,14 +75,21 @@ from ui_flow import (
     build_home_primary_action as build_home_primary_action_core,
     build_home_secondary_actions as build_home_secondary_actions_core,
     build_user_journey_steps as build_user_journey_steps_core,
+    cleanup_apply_options,
+    cleanup_anchor_kind,
+    cleanup_cta_label,
+    cleanup_rule_summary,
+    compensation_display_amount,
     determine_user_next_step as determine_user_next_step_core,
     default_income_cleanup_scenario,
     format_review_operation_line,
+    has_mixed_amounts,
     import_period_display,
     import_status_label,
     operation_display_label,
     review_count_for_operations,
     sort_cleanup_groups,
+    split_summary_text,
     visible_operation_columns,
 )
 from storage import (
@@ -1003,30 +1010,30 @@ def ignore_category_operation(row: pd.Series) -> None:
 
 
 def render_category_operation_actions(row: pd.Series, profile: dict, category: str, key_prefix: str) -> None:
-    action_options = ["Действие", "Изменить категорию", "Оборотные средства", "Перевод себе", "Создать правило для похожих", "Не учитывать эту операцию", "Перейти к проверке"]
+    action_options = ["Действие", "Изменить категорию", "Оборотные средства", "Перевод себе", "Запомнить правило", "Не учитывать эту операцию", "Перейти к проверке"]
     if category in {"Прочее / проверить", "Неразобранные переводы / проверить", "Переводы, которые нужно уточнить"}:
-        action_options = ["Разобрать", *action_options[1:]]
+        action_options = ["Проверить", *action_options[1:]]
     action = st.selectbox(
         "Действие",
         action_options,
         key=make_widget_key(key_prefix, "action", row["id"]),
         label_visibility="collapsed",
     )
-    if action in {"Разобрать", "Изменить категорию"}:
+    if action in {"Проверить", "Изменить категорию"}:
         selected_category = st.selectbox(
             "Новая категория",
             expense_categories(profile),
             key=make_widget_key(key_prefix, "new_category", row["id"]),
         )
         create_rule = st.checkbox(
-            "Создать правило для похожих",
+            "Всегда для этого магазина / сервиса",
             key=make_widget_key(key_prefix, "create_rule", row["id"]),
         )
         if st.button("Сохранить", key=make_widget_key(key_prefix, "save_category", row["id"])):
             update_category_operation(row, "Личный расход", selected_category, create_rule, profile)
     elif action == "Оборотные средства":
         create_rule = st.checkbox(
-            "Применить к похожим операциям",
+            "Запомнить для этого магазина / сервиса",
             key=make_widget_key(key_prefix, "project_rule", row["id"]),
             help="Например, все операции TILDA будут исключаться из личного бюджета как проектный оборот.",
         )
@@ -1035,15 +1042,15 @@ def render_category_operation_actions(row: pd.Series, profile: dict, category: s
             update_category_operation(row, "Проектный оборот", "Не учитывать", create_rule, profile)
     elif action == "Перевод себе":
         create_rule = st.checkbox(
-            "Применить к похожим операциям",
+            "Запомнить для этого магазина / сервиса",
             key=make_widget_key(key_prefix, "internal_rule", row["id"]),
         )
         st.caption("Операция не будет считаться расходом, доходом или частью плана.")
         if st.button("Сохранить как перевод самому себе", key=make_widget_key(key_prefix, "save_internal", row["id"])):
             update_category_operation(row, "Внутренний перевод", "Не учитывать", create_rule, profile)
-    elif action == "Создать правило для похожих":
+    elif action == "Запомнить правило":
         operation_type = st.selectbox(
-            "Что делать с похожими операциями?",
+            "Что делать с будущими операциями этого магазина / сервиса?",
             ["Личный расход", "Проектный оборот", "Внутренний перевод", "Не учитывать"],
             key=make_widget_key(key_prefix, "rule_operation_type", row["id"]),
         )
@@ -1052,7 +1059,7 @@ def render_category_operation_actions(row: pd.Series, profile: dict, category: s
         else:
             category_options = ["Не учитывать"]
         selected_category = st.selectbox(
-            "Категория для похожих операций",
+            "Категория для будущих операций",
             category_options,
             key=make_widget_key(key_prefix, "rule_category", row["id"]),
         )
@@ -1142,7 +1149,7 @@ def render_category_expense_row(category: str, fact: float, plan: float, operati
     is_open = st.session_state.get("opened_category") == category
     render_category_progress_card(category, fact, plan, is_open)
     col1, col2 = st.columns([1, 5])
-    button_label = "Скрыть" if is_open else ("Разобрать" if category in {"Прочее / проверить", "Неразобранные переводы / проверить", "Переводы, которые нужно уточнить"} else "Открыть")
+    button_label = "Скрыть" if is_open else ("Проверить" if category in {"Прочее / проверить", "Неразобранные переводы / проверить", "Переводы, которые нужно уточнить"} else "Открыть")
     if col1.button(button_label, key=make_widget_key("category_expand", key_scope, profile["id"], month, category)):
         st.session_state["opened_category"] = None if is_open else category
         st.rerun()
@@ -1384,7 +1391,7 @@ def attention_items(
                         "title": "Операция на проверку",
                         "text": f"{money(float(row['bank_amount']))} · {row.get('description', '')}",
                         "status": "warn",
-                        "button": "Разобрать",
+                        "button": "Проверить",
                         "operation_id": row.get("id"),
                         "category": row.get("budget_category") or row.get("plan_category") or "Прочее / проверить",
                     }
@@ -1959,8 +1966,8 @@ def render_operation_reassignment_section(profile: dict, operations: pd.DataFram
     if scenario in {"Компенсация", "Компенсация расходов"}:
         st.caption("Компенсация не считается доходом. Она уменьшает расход выбранной категории.")
     remember_choice = st.radio(
-        "Запомнить для похожих операций?",
-        ["Только эта операция", "Похожие операции этого месяца", "Всегда для этого профиля", "Предложить в общий справочник"],
+        "Как применить?",
+        cleanup_apply_options(row, amount_rule_supported=False) + ["Предложить в общий справочник"],
         horizontal=False,
         key=make_widget_key("reassign_remember_choice", profile["id"], selected_id, scenario),
     )
@@ -1969,7 +1976,7 @@ def render_operation_reassignment_section(profile: dict, operations: pd.DataFram
         f"После сохранения: {operation_type} · {final_category} · влияние на бюджет: {money(personal_amount)}"
     )
     if st.button("Сохранить новое назначение", key=make_widget_key("save_reassignment", profile["id"], selected_id, scenario), type="primary"):
-        create_rule = remember_choice in {"Похожие операции этого месяца", "Всегда для этого профиля"}
+        create_rule = remember_choice == "Всегда для этого магазина / сервиса"
         save_operation_reassignment(row, scenario, category, create_rule, profile)
         if remember_choice == "Предложить в общий справочник":
             storage.record_global_rule_candidate(row.to_dict(), final_category, profile["id"])
@@ -2385,12 +2392,13 @@ def render_existing_split_allocations(operation_id: str) -> bool:
     return True
 
 
-def render_split_editor(profile: dict, row: pd.Series, row_key: str) -> None:
+def render_split_editor(profile: dict, row: pd.Series, row_key: str, use_expander: bool = True) -> None:
     operation_id = str(row["id"])
     if render_existing_split_allocations(operation_id):
         return
 
-    with st.expander("Разделить сумму на части", expanded=False):
+    container = st.expander("Разделить сумму на части", expanded=False) if use_expander else st.container()
+    with container:
         st.caption(
             "Используйте разделение, если одна банковская операция относится к нескольким смыслам: "
             "например, часть — кафе, часть — такси, часть — подарок."
@@ -2456,6 +2464,7 @@ def render_split_editor(profile: dict, row: pd.Series, row_key: str) -> None:
             st.success("Сумма распределена полностью.")
         else:
             st.warning(f"Осталось распределить: {money(totals['remaining'])}")
+        st.info(split_summary_text())
 
         ok, message = storage.validate_operation_allocations(row, allocations)
         if message and not ok:
@@ -2479,7 +2488,21 @@ def render_review_rows(profile: dict, review: pd.DataFrame, mode: str, key_prefi
         with st.expander(format_review_operation_line(row)):
             st.caption(f"{row.get('bank', '')} · сейчас: {row.get('operation_type', 'Проверить')} · {row.get('budget_category', 'Прочее / проверить')}")
             row_key = make_widget_key(key_prefix, mode, row["id"])
-            render_split_editor(profile, row, row_key)
+            accounting_mode = st.radio(
+                "Как учесть эту операцию?",
+                ["Одной категорией", "Разделить сумму", "Не учитывать"],
+                horizontal=True,
+                key=make_widget_key(row_key, "accounting_mode"),
+            )
+            if accounting_mode == "Разделить сумму":
+                render_split_editor(profile, row, row_key, use_expander=False)
+                continue
+            if accounting_mode == "Не учитывать":
+                st.info("Операция не попадёт в доходы, расходы и план.")
+                if st.button("Сохранить как не учитывать", key=make_widget_key(row_key, "save_ignore_mode")):
+                    quick_update_operation(row, "Не учитывать", "Не учитывать", 0.0)
+                continue
+            st.caption("Если в одном переводе несколько смыслов, выберите “Разделить сумму”.")
             st.divider()
             render_quick_buttons(row, expense_categories(profile), row_key, row.get("budget_category", "Прочее / проверить"))
             st.divider()
@@ -2502,6 +2525,7 @@ def render_review_rows(profile: dict, review: pd.DataFrame, mode: str, key_prefi
                     category_options = expense_categories(profile)
                     category_label = "Какую категорию уменьшает?"
                     amount_value = -abs(float(row["bank_amount"] or 0))
+                    st.caption(f"Сумма компенсации: {money(compensation_display_amount(row['bank_amount']))}")
                     st.caption("Компенсация не считается доходом. Она уменьшает расход выбранной категории.")
                 elif scenario == "Вернули долг":
                     operation_type = "Возврат займа"
@@ -2558,9 +2582,28 @@ def render_review_rows(profile: dict, review: pd.DataFrame, mode: str, key_prefi
                 index=category_options.index(row["budget_category"]) if row["budget_category"] in category_options else 0,
                 key=make_widget_key(row_key, "cat", operation_type),
             )
-            personal_amount = col3.number_input("Сумма для личного бюджета", value=float(amount_value), step=100.0, key=make_widget_key(row_key, "amount", operation_type))
+            if operation_type == "Компенсация совместных расходов":
+                display_compensation = col3.number_input(
+                    "Сумма компенсации",
+                    value=compensation_display_amount(row["bank_amount"]),
+                    step=100.0,
+                    key=make_widget_key(row_key, "compensation_display_amount", operation_type),
+                )
+                personal_amount = -abs(float(display_compensation or 0))
+                col3.caption("В расчётах эта сумма уменьшит выбранную категорию.")
+            else:
+                personal_amount = col3.number_input(
+                    "Сумма для личного бюджета",
+                    value=float(amount_value),
+                    step=100.0,
+                    key=make_widget_key(row_key, "amount", operation_type),
+                )
             comment = st.text_input("Комментарий", value=row.get("comment", "") or "", key=make_widget_key(row_key, "comment"))
-            create_rule = st.checkbox("Применить ко всем похожим операциям", key=make_widget_key(row_key, "rule"))
+            create_rule = False
+            if cleanup_anchor_kind(row) == "merchant":
+                create_rule = st.checkbox("Всегда для этого магазина / сервиса", key=make_widget_key(row_key, "rule"))
+            elif cleanup_anchor_kind(row) == "person":
+                st.caption("Для переводов людям решение сохраняется только для этой операции.")
             if st.button("Сохранить правку", key=make_widget_key(row_key, "save")):
                 planning_updates = manual_planning_updates(operation_type, category, personal_amount)
                 update_operation(
@@ -2774,6 +2817,8 @@ def render_cleanup_candidate_cards(profile: dict, candidates: pd.DataFrame, dire
         total = float(row.get("total_sum") or 0)
         monthly = float(row.get("median_monthly_sum") or 0)
         example = str(row.get("examples") or "")[:140]
+        kind = cleanup_anchor_kind(row)
+        cta = cleanup_cta_label(row, direction_kind)
         with st.container(border=True):
             cols = st.columns([3, 1])
             with cols[0]:
@@ -2781,10 +2826,20 @@ def render_cleanup_candidate_cards(profile: dict, candidates: pd.DataFrame, dire
                 st.caption(
                     f"{direction} · {count} раз(а) · за историю {money(total)} · в среднем {money(monthly)} в месяц"
                 )
+                if kind == "merchant":
+                    st.caption("Похоже на магазин или сервис. Можно запомнить категорию для будущих операций.")
+                elif str(row.get("direction") or direction_kind) in {"income", "incoming"} and kind == "person":
+                    st.caption("Поступление от человека. Важно не перепутать компенсацию, возврат долга и доход.")
+                elif kind == "person":
+                    st.caption("Переводы людям могут означать разные вещи: расход, долг, компенсацию или подарок.")
+                    if has_mixed_amounts(row):
+                        st.warning("У этого человека разные суммы. Не создавайте общее правило на все переводы.")
+                elif count > 1 or int(row.get("months_seen") or 0) >= 2:
+                    st.caption("Похоже на регулярный платёж. Если это постоянный расход, можно запомнить правило.")
                 if example:
                     st.caption(f"Пример: {example}")
             with cols[1]:
-                if st.button("Разобрать", key=make_widget_key("cleanup_focus_candidate", profile["id"], direction_kind, anchor)):
+                if st.button(cta, key=make_widget_key("cleanup_focus_candidate", profile["id"], direction_kind, anchor)):
                     st.session_state[focus_key] = anchor
                     st.rerun()
 
@@ -3010,8 +3065,6 @@ def apply_rule_scope(rule: dict, selected: pd.Series, rule_scope: str, report_mo
     rule["rule_scope"] = rule_scope
     if rule_scope == "single_operation":
         rule["operation_id"] = str(selected.get("first_operation_id") or "")
-    elif rule_scope == "current_month_similar":
-        rule["rule_month"] = report_month or str(selected.get("first_operation_datetime") or "")[:7]
     return rule
 
 
@@ -3034,8 +3087,8 @@ def apply_plan_behavior(rule: dict, plan_behavior: str, selected: pd.Series) -> 
 def rule_scope_label(scope: str) -> str:
     return {
         "single_operation": "Только к этой операции",
-        "current_month_similar": "Ко всем похожим операциям этого месяца",
         "recurring_rule": "Сделать постоянным правилом",
+        "merchant_rule": "Всегда для этого магазина / сервиса",
         "global_person_rule": "Сделать постоянным правилом для человека",
     }.get(scope, scope)
 
@@ -3061,8 +3114,10 @@ def rule_summary(anchor: str, scenario: str, category: str, rule_scope: str, pla
         return f"{scope_text} будут считаться компенсацией и уменьшать категорию “{category}”."
     if scenario == "Личный доход":
         return f"Поступление будет учтено как личный доход в категории “{category}”."
+    if rule_scope == "merchant_rule":
+        return cleanup_rule_summary(anchor, scenario, category, "Всегда для этого магазина / сервиса")
     if rule_scope == "single_operation":
-        return f"Эта операция будет учтена как расход в категории “{category}” только в {month_text}."
+        return cleanup_rule_summary(anchor, scenario, category, "Только эта операция")
     if plan_behavior == "Учитывать как постоянную статью":
         return f"Все похожие операции “{anchor}” будут считаться постоянным расходом в категории “{category}”."
     return f"Похожие операции будут учтены в факте месяца, но не попадут в постоянный план."
@@ -3128,6 +3183,21 @@ def build_income_rule_from_scenario(anchor: str, direction: str, scenario: str, 
     return base
 
 
+def merchant_rule_from_cleanup_rule(anchor: str, rule: dict) -> dict:
+    return {
+        "id": f"merchant_{uuid.uuid4().hex[:10]}",
+        "enabled": True,
+        "merchant_anchor": anchor,
+        "contains_any": [anchor],
+        "direction": rule.get("direction"),
+        "operation_type": rule.get("operation_type", "Личный расход"),
+        "budget_category": rule.get("budget_category", "Прочее / проверить"),
+        "personal_amount_mode": rule.get("budget_amount_mode") or "abs",
+        "confidence": 0.95,
+        "scenario": rule.get("scenario", "merchant_category"),
+    }
+
+
 def render_candidate_rule_form(
     profile: dict,
     candidates: pd.DataFrame,
@@ -3148,10 +3218,28 @@ def render_candidate_rule_form(
         key=make_widget_key(prefix, "anchor"),
     )
     selected = candidates[candidates["anchor"] == anchor].iloc[0]
-    default_scope = default_rule_scope_for_candidate(selected)
-    scope_options = ["single_operation", "current_month_similar", "recurring_rule"]
+    anchor_kind = cleanup_anchor_kind(selected)
+    if anchor_kind == "merchant":
+        scope_options = ["single_operation", "merchant_rule"]
+        default_scope = "merchant_rule"
+    elif anchor_kind == "person":
+        scope_options = ["single_operation"]
+        default_scope = "single_operation"
+    else:
+        default_scope = default_rule_scope_for_candidate(selected)
+        scope_options = ["single_operation", "recurring_rule"]
     st.markdown("**Шаг 1. Что это за операция?**")
-    if default_scope == "recurring_rule":
+    if anchor_kind == "person":
+        st.warning(
+            "Один и тот же человек может означать разные вещи. В основном сценарии сохраняем решение только для выбранной операции."
+        )
+        if has_mixed_amounts(selected):
+            st.warning(
+                "У этого человека встречаются разные суммы. Лучше не делать одно правило на все переводы."
+            )
+    elif anchor_kind == "merchant":
+        st.caption("Похоже на магазин или сервис. Для merchant обычно безопасно запомнить категорию.")
+    elif default_scope == "recurring_rule":
         st.caption("Похоже на повторяющуюся операцию. Можно сделать постоянным правилом.")
     else:
         st.warning("Эта операция встретилась в истории один раз. Если сделать её постоянной, план месяца может быть завышен.")
@@ -3301,11 +3389,14 @@ def render_candidate_rule_form(
     st.info(rule_summary(anchor, scenario, category, rule_scope, locals().get("plan_behavior", "Не учитывать в плане"), report_month))
     button_label = {
         "single_operation": "Сохранить для этой операции",
-        "current_month_similar": "Сохранить для похожих операций месяца",
         "recurring_rule": "Сохранить как постоянное правило",
+        "merchant_rule": "Запомнить категорию для магазина / сервиса",
     }.get(rule_scope, "Сохранить правило")
     if st.button(button_label, key=make_widget_key(prefix, "create")):
-        append_plan_rule(profile["id"], rule)
+        if rule_scope == "merchant_rule":
+            append_merchant_rule(profile["id"], merchant_rule_from_cleanup_rule(anchor, rule))
+        else:
+            append_plan_rule(profile["id"], rule)
         stats = reclassify_profile_operations(profile["id"])
         st.success(f"Правило сохранено. Пересчитано операций: {stats['changed']}.")
         st.rerun()
@@ -3353,7 +3444,7 @@ def render_cleanup_page(profile: dict, operations: pd.DataFrame, history: pd.Dat
     )
 
     st.subheader("Повторяющиеся и крупные списания")
-    st.caption("Сначала разберите группы ниже. Если создать правило, похожие операции текущего месяца обновятся автоматически.")
+    st.caption("Сначала разберите группы ниже. Правила применяются только в понятной области: к одной операции, merchant или постоянной статье.")
     if important.empty:
         st.success("Важных списаний для разбора сейчас нет.")
     else:
@@ -3729,7 +3820,7 @@ def render_plan_tab(profile: dict, history: pd.DataFrame, report_month: str | No
         with st.expander(f"Мелкие разовые расходы, скрытые из автоплана: {len(minor_candidates)} на {money(float(minor_candidates['total_sum'].sum()))}"):
             st.caption("Эти операции не участвуют в автоплане. Они останутся в проверке месяца, если потребуется.")
             st.dataframe(display_hidden_candidates(minor_candidates), use_container_width=True, hide_index=True)
-    st.subheader("Разобрать поступления")
+    st.subheader("Поступления на проверку")
     if important_income_candidates.empty:
         st.success("Неразобранных повторяющихся поступлений для плана не найдено.")
     else:

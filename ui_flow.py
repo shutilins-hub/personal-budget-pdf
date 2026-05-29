@@ -126,6 +126,95 @@ def operation_display_label(value: str | None) -> str:
     return OPERATION_DISPLAY_LABELS.get(value, value)
 
 
+def cleanup_anchor_kind(candidate_or_row: dict[str, Any] | pd.Series) -> str:
+    person = str(candidate_or_row.get("person_anchor") or "").strip()
+    merchant = str(candidate_or_row.get("merchant_anchor") or "").strip()
+    anchor = str(candidate_or_row.get("anchor") or "").strip()
+    text = " ".join([anchor, merchant, str(candidate_or_row.get("description") or "")]).casefold()
+    if merchant:
+        return "merchant"
+    if person:
+        return "person"
+    merchant_hints = ("ип ", "ооо", "zao", "ooo", "shop", "store", "market", "кафе", "coffee", "tilda")
+    if any(hint in text for hint in merchant_hints):
+        return "merchant"
+    person_hints = ("перевод от", "перевод для", " ш.", " юрьевич", "сергеевич", "александр", "анна")
+    if any(hint in text for hint in person_hints):
+        return "person"
+    return "operation"
+
+
+def cleanup_cta_label(candidate_or_row: dict[str, Any] | pd.Series, direction_kind: str = "") -> str:
+    kind = cleanup_anchor_kind(candidate_or_row)
+    direction = str(candidate_or_row.get("direction") or direction_kind or "")
+    count = int(candidate_or_row.get("count") or 1)
+    months_seen = int(candidate_or_row.get("months_seen") or 1)
+    if direction in {"income", "incoming"} and kind == "person":
+        return "Уточнить поступление"
+    if kind == "merchant":
+        return "Запомнить категорию"
+    if count > 1 or months_seen >= 2:
+        return "Назначить правило"
+    if kind == "operation":
+        return "Проверить операцию"
+    return "Уточнить смысл"
+
+
+def cleanup_apply_options(candidate_or_row: dict[str, Any] | pd.Series, amount_rule_supported: bool = False) -> list[str]:
+    kind = cleanup_anchor_kind(candidate_or_row)
+    if kind == "merchant":
+        return ["Только эта операция", "Всегда для этого магазина / сервиса"]
+    if kind == "person":
+        options = ["Только эта операция"]
+        if amount_rule_supported:
+            options.append("Запомнить для этого человека и похожей суммы")
+        return options
+    return ["Только эта операция"]
+
+
+def has_mixed_amounts(candidate_or_row: dict[str, Any] | pd.Series) -> bool:
+    count = int(candidate_or_row.get("count") or 0)
+    months_seen = int(candidate_or_row.get("months_seen") or 0)
+    total = abs(float(candidate_or_row.get("total_sum") or 0))
+    median = abs(float(candidate_or_row.get("median_monthly_sum") or 0))
+    if count <= 1:
+        return False
+    if median <= 0:
+        return months_seen > 1
+    return abs((total / max(count, 1)) - median) > max(500.0, median * 0.25)
+
+
+def cleanup_rule_summary(
+    anchor: str,
+    scenario: str,
+    category: str,
+    apply_option: str,
+    amount: float | None = None,
+) -> str:
+    if apply_option == "Всегда для этого магазина / сервиса":
+        return f"Все будущие операции “{anchor}” будут попадать в категорию “{category}”."
+    if apply_option == "Запомнить для этого человека и похожей суммы":
+        amount_text = f" около {compact_money(amount)}" if amount else ""
+        return (
+            f"Переводы “{anchor}”{amount_text} будут учитываться как {scenario.lower()} "
+            f"в категории “{category}”. Другие переводы этому человеку останутся на проверке."
+        )
+    if scenario in {"Не учитывать", "Не учитывать в плане"}:
+        return "Операция не попадёт в доходы, расходы и план."
+    return f"Только эта операция будет учтена как {scenario.lower()} в категории “{category}”."
+
+
+def split_summary_text() -> str:
+    return "Эта операция будет разделена на части. Постоянное правило создано не будет."
+
+
+def compensation_display_amount(value: object) -> float:
+    try:
+        return abs(float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def import_period_display(period_start: str | None, period_end: str | None) -> str:
     start = "" if period_start is None or pd.isna(period_start) else str(period_start).strip()
     end = "" if period_end is None or pd.isna(period_end) else str(period_end).strip()
