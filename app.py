@@ -13,7 +13,7 @@ import storage
 from app_config import get_app_config, upload_within_limit, verify_password
 from bank_adapters import detect_document_type, link_internal_transfers, parse_by_document_type
 from budget_engine import build_budget_rows, dashboard_metrics, financial_health_assessment, income_plan_fact, plan_fact
-from category_mapping import EXPENSE_CATEGORIES, INCOME_CATEGORIES
+from category_mapping import EXPENSE_CATEGORIES, INCOME_CATEGORIES, map_expense_category, map_income_category
 from classifier import build_rule_from_operation, classify_operations, rule_matches
 from debug_exports import debug_exports_enabled
 from financial_health import build_financial_health_report
@@ -77,6 +77,7 @@ from ui_flow import (
     build_user_journey_steps as build_user_journey_steps_core,
     cleanup_apply_options,
     cleanup_anchor_kind,
+    cleanup_group_focus_action,
     cleanup_cta_label,
     cleanup_rule_summary,
     compensation_display_amount,
@@ -86,7 +87,17 @@ from ui_flow import (
     has_mixed_amounts,
     import_period_display,
     import_status_label,
+    build_plan_accuracy,
+    canonical_plan_category,
+    is_income_plan_category,
     operation_display_label,
+    offer_rule_before_operation,
+    plan_accuracy_title,
+    plan_mode_description,
+    plan_mode_label,
+    plan_primary_status,
+    plan_status_label,
+    recommendation_stage,
     review_count_for_operations,
     sort_cleanup_groups,
     split_summary_text,
@@ -154,20 +165,36 @@ FALLBACK_INCOME_CATEGORIES = [
 
 def expense_categories(profile: dict | None = None) -> list[str]:
     labels = category_labels("expense", (profile or {}).get("id")) if profile else category_labels("expense")
-    return labels or FALLBACK_EXPENSE_PLAN_CATEGORIES
+    source = labels or FALLBACK_EXPENSE_PLAN_CATEGORIES
+    result: list[str] = []
+    for label in source:
+        mapped = map_expense_category(label)
+        if mapped and mapped not in result:
+            result.append(mapped)
+    return result
 
 
 def income_categories(profile: dict | None = None) -> list[str]:
     labels = category_labels("income", (profile or {}).get("id")) if profile else category_labels("income")
-    return labels or FALLBACK_INCOME_CATEGORIES
+    source = labels or FALLBACK_INCOME_CATEGORIES
+    result: list[str] = []
+    for label in source:
+        mapped = map_income_category(label)
+        if mapped and "провер" not in mapped.casefold() and mapped not in result:
+            result.append(mapped)
+    return result
 
 
 def manual_plan_editor_df(profile: dict) -> pd.DataFrame:
-    current_plan = profile.get("plan") or {}
+    current_plan: dict[str, float] = {}
+    for category, amount in (profile.get("plan") or {}).items():
+        mapped = map_expense_category(category)
+        current_plan[mapped] = current_plan.get(mapped, 0.0) + float(amount or 0)
     income_set = set(income_categories(profile))
     rows: list[dict[str, object]] = []
     seen: set[str] = set()
     for category in expense_categories(profile):
+        category = map_expense_category(category)
         if category in seen:
             continue
         rows.append({"Категория": category, "Лимит": float(current_plan.get(category, 0) or 0)})
@@ -2206,6 +2233,22 @@ def editable_review(profile: dict, operations: pd.DataFrame, key_prefix: str = "
         review = review[review["direction"] == "income"]
     elif review_mode == "Списания":
         review = review[review["direction"] != "income"]
+    focus_anchor = str(st.session_state.get("cleanup_focus_anchor_text") or "").strip()
+    if focus_anchor:
+        haystack = (
+            review.get("description", pd.Series("", index=review.index)).fillna("").astype(str)
+            + " "
+            + review.get("merchant_anchor", pd.Series("", index=review.index)).fillna("").astype(str)
+            + " "
+            + review.get("person_anchor", pd.Series("", index=review.index)).fillna("").astype(str)
+        ).str.casefold()
+        filtered = review[haystack.str.contains(re.escape(focus_anchor.casefold()), regex=True)]
+        if not filtered.empty:
+            review = filtered
+            st.success(f"Показаны операции месяца по подсказке: {focus_anchor}")
+            if st.button("Показать все операции на проверку", key=make_widget_key(key_prefix, "clear_anchor_focus")):
+                st.session_state.pop("cleanup_focus_anchor_text", None)
+                st.rerun()
     review = review.assign(_abs_amount=review["bank_amount"].abs())
     focus_id = st.session_state.get("focus_operation_id")
     if focus_id and "id" in review.columns:
@@ -2220,13 +2263,13 @@ def editable_review(profile: dict, operations: pd.DataFrame, key_prefix: str = "
     income_review = review[review["direction"] == "income"]
     expense_review = review[review["direction"] != "income"]
     st.subheader("Поступления на проверку")
-    st.caption("Эти строки можно разобрать вручную, если они не попали в групповые правила выше.")
+    st.caption("Поступления важно проверить отдельно: компенсации, возвраты долгов и переводы себе не должны случайно стать доходом.")
     if income_review.empty:
         st.info("Поступлений на проверку нет.")
     else:
         render_review_rows(profile, income_review, mode="income", key_prefix=key_prefix)
     st.subheader("Списания на проверку")
-    st.caption("Эти строки можно разобрать вручную, если они не попали в групповые правила выше.")
+    st.caption("Списания можно отнести к категории, разделить на части или не учитывать.")
     if expense_review.empty:
         st.info("Списаний на проверку нет.")
     else:
@@ -2808,7 +2851,6 @@ def display_hidden_candidates(candidates: pd.DataFrame) -> pd.DataFrame:
 def render_cleanup_candidate_cards(profile: dict, candidates: pd.DataFrame, direction_kind: str, limit: int = 5) -> None:
     if candidates.empty:
         return
-    focus_key = make_widget_key("cleanup_focus_anchor", profile["id"], direction_kind)
     top = sort_cleanup_groups(candidates).head(limit)
     for _, row in top.iterrows():
         anchor = str(row.get("anchor") or "Операция")
@@ -2819,6 +2861,7 @@ def render_cleanup_candidate_cards(profile: dict, candidates: pd.DataFrame, dire
         example = str(row.get("examples") or "")[:140]
         kind = cleanup_anchor_kind(row)
         cta = cleanup_cta_label(row, direction_kind)
+        action = cleanup_group_focus_action(row)
         with st.container(border=True):
             cols = st.columns([3, 1])
             with cols[0]:
@@ -2839,40 +2882,60 @@ def render_cleanup_candidate_cards(profile: dict, candidates: pd.DataFrame, dire
                 if example:
                     st.caption(f"Пример: {example}")
             with cols[1]:
-                if st.button(cta, key=make_widget_key("cleanup_focus_candidate", profile["id"], direction_kind, anchor)):
-                    st.session_state[focus_key] = anchor
+                if action and st.button(cta, key=make_widget_key("cleanup_focus_candidate", profile["id"], direction_kind, anchor)):
+                    st.session_state["cleanup_focus_anchor_text"] = action["anchor"]
+                    st.session_state["focus_review"] = True
                     st.rerun()
 
 
+def _plain_cell(value: object) -> str:
+    if isinstance(value, pd.Series):
+        value = value.dropna().iloc[0] if not value.dropna().empty else ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
+def canonical_recommended_plan(recommended: pd.DataFrame, category_column: str = "budget_category") -> pd.DataFrame:
+    if recommended.empty or category_column not in recommended.columns:
+        return recommended.copy()
+    df = recommended.copy()
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    df[category_column] = df[category_column].map(map_expense_category)
+    return df
+
+
 def display_recommended_plan(recommended: pd.DataFrame) -> pd.DataFrame:
-    columns = ["Категория", "Слой", "История", "Среднее", "Медиана", "Рекомендую", "Статус", "Комментарий"]
+    columns = ["Категория", "Рекомендация", "История", "Статус", "Пояснение"]
     if recommended.empty:
         return pd.DataFrame(columns=columns)
-    df = recommended.copy()
+    df = canonical_recommended_plan(recommended)
     if "layer" not in df.columns:
         df["layer"] = "База"
     if "status" not in df.columns:
         df["status"] = "ready"
     if "comment" not in df.columns:
         df["comment"] = ""
-    status_labels = {
-        "ready": "Готово",
-        "needs_classification": "Разобрать",
-        "low_history": "Мало истории",
-        "excluded": "Исключено",
-        "check": "Проверить",
-        "ready": "Готово",
-    }
+    for column in ["months_count", "suggested_plan"]:
+        if column not in df.columns:
+            df[column] = 0
+    comments = df.apply(lambda row: _plain_cell(row.get("comment")), axis=1)
+    comments = comments.replace(
+        {
+            "": "Рекомендация рассчитана по доступной истории.",
+            "Обычные расходы жизни.": "Обычные расходы за доступные месяцы.",
+        }
+    )
     return pd.DataFrame(
         {
             "Категория": df["budget_category"],
-            "Слой": df["layer"],
             "История": df["months_count"].fillna(0).astype(int).astype(str) + " мес.",
-            "Среднее": df["mean"].round(0).astype(int),
-            "Медиана": df["median"].round(0).astype(int),
-            "Рекомендую": df["suggested_plan"].round(0).astype(int),
-            "Статус": df["status"].map(status_labels).fillna(df["status"]),
-            "Комментарий": df["comment"],
+            "Рекомендация": df["suggested_plan"].fillna(0).round(0).astype(int).map(money),
+            "Статус": df["status"].map(plan_status_label).fillna(df["status"]),
+            "Пояснение": comments,
         },
         columns=columns,
     )
@@ -2881,14 +2944,61 @@ def display_recommended_plan(recommended: pd.DataFrame) -> pd.DataFrame:
 def category_sum(df: pd.DataFrame, names: set[str]) -> float:
     if df.empty or "budget_category" not in df.columns or "suggested_plan" not in df.columns:
         return 0.0
-    return float(df.loc[df["budget_category"].isin(names), "suggested_plan"].sum())
+    categories = df["budget_category"].map(map_expense_category)
+    mapped_names = {map_expense_category(name) for name in names}
+    return float(df.loc[categories.isin(mapped_names), "suggested_plan"].sum())
+
+
+def accepted_plan_from_recommendation(recommended: pd.DataFrame) -> dict[str, float]:
+    if recommended.empty or "budget_category" not in recommended.columns or "suggested_plan" not in recommended.columns:
+        return {}
+    df = canonical_recommended_plan(recommended)
+    if "layer" in df.columns:
+        df = df[df["layer"] != "Мелкие"].copy()
+    df["suggested_plan"] = pd.to_numeric(df["suggested_plan"], errors="coerce").fillna(0)
+    grouped = df.groupby("budget_category", as_index=False)["suggested_plan"].sum()
+    return {
+        str(row["budget_category"]): float(row["suggested_plan"])
+        for _, row in grouped.iterrows()
+        if str(row.get("budget_category") or "").strip()
+    }
+
+
+def display_income_plan_table(recommended: pd.DataFrame) -> pd.DataFrame:
+    columns = ["Категория", "Рекомендация", "История", "Статус", "Пояснение"]
+    if recommended.empty:
+        return pd.DataFrame(columns=columns)
+    df = recommended.copy()
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    category_col = "income_category" if "income_category" in df.columns else "budget_category"
+    if category_col not in df.columns:
+        return pd.DataFrame(columns=columns)
+    df[category_col] = df[category_col].map(map_income_category)
+    df = df[df[category_col].map(is_income_plan_category)].copy()
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    for column in ["months_count", "suggested_plan"]:
+        if column not in df.columns:
+            df[column] = 0
+    if "status" not in df.columns:
+        df["status"] = "ready"
+    if "comment" not in df.columns:
+        df["comment"] = ""
+    comments = df.apply(lambda row: _plain_cell(row.get("comment")) or "Доход рассчитан по распознанным личным поступлениям.", axis=1)
+    return pd.DataFrame(
+        {
+            "Категория": df[category_col],
+            "Рекомендация": df["suggested_plan"].fillna(0).round(0).astype(int).map(money),
+            "История": df["months_count"].fillna(0).astype(int).astype(str) + " мес.",
+            "Статус": df["status"].map(plan_status_label).fillna(df["status"]),
+            "Пояснение": comments,
+        },
+        columns=columns,
+    )
 
 
 def friendly_plan_table(recommended: pd.DataFrame) -> pd.DataFrame:
-    display = display_recommended_plan(recommended)
-    if display.empty:
-        return display
-    return display[["Категория", "Рекомендую", "История", "Статус", "Комментарий"]]
+    return display_recommended_plan(recommended)
 
 
 def rule_anchor(rule: dict) -> str:
@@ -3207,9 +3317,8 @@ def render_candidate_rule_form(
     if candidates.empty:
         return
     prefix = make_widget_key("cleanup_rule", profile["id"], direction_kind, report_month, len(candidates))
-    focus_key = make_widget_key("cleanup_focus_anchor", profile["id"], direction_kind)
     anchors = candidates["anchor"].tolist()
-    focused_anchor = st.session_state.get(focus_key)
+    focused_anchor = st.session_state.get("cleanup_focus_anchor_text")
     anchor_index = anchors.index(focused_anchor) if focused_anchor in anchors else 0
     anchor = st.selectbox(
         "Операция / человек / merchant",
@@ -3404,11 +3513,12 @@ def render_candidate_rule_form(
 
 def render_cleanup_page(profile: dict, operations: pd.DataFrame, history: pd.DataFrame, report_month: str | None) -> None:
     render_user_journey(history, operations, profile, "Очистка операций")
+    month_text = month_label(report_month) if report_month else "выбранного месяца"
     st.markdown(
-        """
+        f"""
         <div class="budget-hero">
-            <h1>Очистка операций</h1>
-            <div class="budget-sub">Разберите повторяющиеся переводы, крупные операции и поступления, чтобы план и баланс стали точнее.</div>
+            <h1>Проверка месяца</h1>
+            <div class="budget-sub">Проверка {month_text}. Сначала уточните конкретные операции месяца, а правила можно запомнить после понятного решения.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -3426,73 +3536,70 @@ def render_cleanup_page(profile: dict, operations: pd.DataFrame, history: pd.Dat
     minor_income = income_candidates[income_candidates["importance_level"] == "minor_oneoff"] if not income_candidates.empty else pd.DataFrame()
     review_rows = operations[operations["needs_review"].fillna(False).astype(bool)] if not operations.empty and "needs_review" in operations.columns else pd.DataFrame()
     oneoff_large_count = int((important.get("expense_nature", pd.Series(dtype=str)) == "oneoff_large").sum()) if not important.empty and "expense_nature" in important.columns else 0
-    total_to_review = len(important) + len(important_income) + len(review_rows)
-    if total_to_review:
+    review_count = len(review_rows)
+    if review_count:
         st.info(
-            f"Нужно уточнить {total_to_review} операций и групп. "
-            "Сначала разберите повторяющиеся переводы и крупные операции. После этого план и баланс станут точнее."
+            f"Нужно уточнить {review_count} операций текущего месяца. "
+            "После проверки месяц можно использовать для будущего плана."
         )
+        st.caption("Когда накопится 3 проверенных месяца, сервис сможет предложить план по очищенной истории.")
     else:
         st.success("Операций на проверку нет. Можно перейти к плану или контролю.")
+    st.caption("Проверенных месяцев: будет добавлено позже. Сейчас месяц считается проверенным, когда нет операций на проверку.")
     render_metric_grid(
         [
-            {"label": "Группы списаний", "value": str(len(important)), "hint": "Повторяющиеся и крупные операции.", "status": "warn" if len(important) else "good"},
-            {"label": "Крупные разовые", "value": str(oneoff_large_count), "hint": "Не делаем постоянными без подтверждения.", "status": "warn" if oneoff_large_count else "good"},
-            {"label": "Поступления", "value": str(len(important_income)), "hint": "Доходы, компенсации, свои переводы.", "status": "warn" if len(important_income) else "good"},
-            {"label": "Строк месяца", "value": str(len(review_rows)), "hint": "Остались после групповой очистки.", "status": "warn" if len(review_rows) else "good"},
+            {"label": "Операций месяца", "value": str(len(review_rows)), "hint": "Главный рабочий список.", "status": "warn" if len(review_rows) else "good"},
+            {"label": "Поступления", "value": str(int((review_rows["direction"] == "income").sum())) if not review_rows.empty else "0", "hint": "Компенсации, долги, доходы.", "status": "warn" if not review_rows.empty and int((review_rows["direction"] == "income").sum()) else "good"},
+            {"label": "Списания", "value": str(int((review_rows["direction"] != "income").sum())) if not review_rows.empty else "0", "hint": "Категории, split, исключения.", "status": "warn" if not review_rows.empty and int((review_rows["direction"] != "income").sum()) else "good"},
+            {"label": "Подсказок", "value": str(len(important) + len(important_income)), "hint": "Повторы ниже, не основной сценарий.", "status": "warn" if len(important) + len(important_income) else "good"},
         ]
     )
 
-    st.subheader("Повторяющиеся и крупные списания")
-    st.caption("Сначала разберите группы ниже. Правила применяются только в понятной области: к одной операции, merchant или постоянной статье.")
+    st.subheader("Операции текущего месяца на проверку")
+    st.caption("Сначала проверьте конкретные операции этого месяца. Если похожие операции повторяются, сервис предложит запомнить правило после разметки.")
+    editable_review(profile, operations, key_prefix="cleanup_review")
+
+    st.divider()
+    st.subheader("Подсказки по повторяющимся операциям")
+    st.caption("Сервис нашёл похожие операции в истории. Используйте их как подсказку, когда проверяете операции месяца. Не создавайте правило, пока не уверены в смысле операции.")
     if important.empty:
-        st.success("Важных списаний для разбора сейчас нет.")
+        st.success("Подсказок по повторяющимся списаниям сейчас нет.")
     else:
         render_cleanup_candidate_cards(profile, important, "expense")
-        with st.expander("Показать все группы таблицей"):
+        with st.expander("Показать все найденные группы списаний"):
             st.dataframe(display_plan_candidates(important), use_container_width=True, hide_index=True)
         oneoff_large = important[important.get("expense_nature", pd.Series(dtype=str)) == "oneoff_large"] if "expense_nature" in important.columns else pd.DataFrame()
         if not oneoff_large.empty:
-            st.subheader("Разовые крупные операции")
-            st.dataframe(
-                pd.DataFrame(
-                    {
-                        "Операция": oneoff_large["anchor"],
-                        "Сумма": oneoff_large["total_sum"],
-                        "Дата": "",
-                        "Категория": "на проверку",
-                        "Включать в этот месяц?": "решить вручную",
-                        "Делать постоянной?": "только после подтверждения",
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-        with st.expander("Создать правило для списаний", expanded=True):
-            render_candidate_rule_form(profile, important, "expense", report_month)
+            with st.expander("Показать крупные разовые операции таблицей"):
+                st.dataframe(
+                    pd.DataFrame(
+                        {
+                            "Операция": oneoff_large["anchor"],
+                            "Сумма": oneoff_large["total_sum"],
+                            "Дата": "",
+                            "Категория": "на проверку",
+                            "Включать в этот месяц?": "решить вручную",
+                            "Делать постоянной?": "только после подтверждения",
+                        }
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
     if not minor.empty:
-        with st.expander(f"Мелкие разовые операции: {len(minor)} на {money(float(minor['total_sum'].sum()))}"):
+        with st.expander(f"Показать мелкие операции таблицей: {len(minor)} на {money(float(minor['total_sum'].sum()))}"):
             st.caption("Эти операции не участвуют в автоплане. Они останутся в проверке месяца, если потребуется.")
             st.dataframe(display_hidden_candidates(minor), use_container_width=True, hide_index=True)
 
-    st.subheader("Поступления на проверку")
     if important_income.empty:
-        st.success("Важных поступлений для разбора сейчас нет.")
+        st.success("Подсказок по повторяющимся поступлениям сейчас нет.")
     else:
-        st.caption("Поступления нужно разобрать отдельно: компенсации и свои переводы не должны случайно стать доходом.")
         render_cleanup_candidate_cards(profile, important_income, "income")
-        with st.expander("Показать все поступления таблицей"):
+        with st.expander("Показать все найденные поступления таблицей"):
             st.dataframe(display_plan_candidates(important_income), use_container_width=True, hide_index=True)
-        with st.expander("Создать правило для поступлений", expanded=True):
-            render_candidate_rule_form(profile, important_income, "income", report_month)
     if not minor_income.empty:
-        with st.expander(f"Мелкие разовые поступления: {len(minor_income)} на {money(float(minor_income['total_sum'].sum()))}"):
+        with st.expander(f"Показать мелкие поступления таблицей: {len(minor_income)} на {money(float(minor_income['total_sum'].sum()))}"):
             st.caption("Эти операции не участвуют в доходном плане. Они останутся в проверке месяца, если потребуется.")
             st.dataframe(display_hidden_candidates(minor_income), use_container_width=True, hide_index=True)
-
-    st.subheader("Операции текущего месяца на проверку")
-    st.caption("Это отдельные строки, которые остались после групповой очистки. Обычно их становится меньше после создания правил выше.")
-    editable_review(profile, operations, key_prefix="cleanup_review")
 
 
 def render_simplified_plan_tab(
@@ -3503,47 +3610,118 @@ def render_simplified_plan_tab(
 ) -> None:
     history = build_budget_rows(history, allocations)
     render_user_journey(history, pd.DataFrame(), profile, "План месяца")
-    st.write("Здесь можно принять рекомендованный план или вручную поправить лимиты по категориям.")
+    st.header("План месяца")
+    st.caption(
+        "Здесь можно задать лимиты вручную или принять рекомендацию сервиса. "
+        "Чем больше проверенных месяцев, тем точнее рекомендация."
+    )
     if not report_month:
         st.info("Сначала импортируйте операции, чтобы выбрать месяц отчёта.")
         return
     default_history_months = 6
+    accuracy = build_plan_accuracy(history, report_month, required_months=3)
     quality = plan_coverage_score(history, report_month, default_history_months, profile)
     raw_preview = build_raw_auto_plan_from_operations(history, report_month, default_history_months, "median", 0, 500, profile)
     clean_preview = build_auto_expense_plan(history, report_month, default_history_months, "median", 0, 500, profile)
     raw_limit = float(raw_preview["suggested_plan"].sum()) if not raw_preview.empty else 0.0
     clean_limit = float(clean_preview["suggested_plan"].sum()) if not clean_preview.empty else 0.0
     raw_unparsed_transfers = category_sum(raw_preview, {"Неразобранные переводы / проверить", "Переводы, которые нужно уточнить"})
-    raw_cash = category_sum(raw_preview, {"Наличные / проверить"})
     candidates = get_plan_review_candidates_from_operations(history, report_month, default_history_months, profile)
     minor_candidates = candidates[candidates["importance_level"] == "minor_oneoff"] if not candidates.empty else pd.DataFrame()
 
+    accepted_limit = float(profile.get("monthly_limit") or 0)
+    month_text = month_label(report_month)
+    if accepted_limit > 0:
+        top_title = f"Ваш план на {month_text.lower()} — {money(accepted_limit)}"
+        top_text = "Можно пользоваться как рабочим лимитом месяца. После проверки операций сервис уточнит рекомендации."
+        top_status = "good"
+    else:
+        top_title = "План ещё не задан"
+        top_text = "Начните с безопасного ручного плана. Автоматическая рекомендация станет точнее после проверки месяцев."
+        top_status = "neutral"
+    render_attention_card(
+        top_title,
+        top_text,
+        top_status,
+    )
+    cta_cols = st.columns([1, 1, 2])
+    if cta_cols[0].button(
+        "Настроить план вручную",
+        key=make_widget_key("plan_focus_manual", profile["id"], report_month),
+        type="primary",
+    ):
+        st.session_state["plan_manual_focus"] = True
+    if int(accuracy["review_count"]) > 0:
+        cta_cols[1].button(
+            "Перейти к проверке операций",
+            key=make_widget_key("plan_go_to_cleanup", profile["id"], report_month),
+            on_click=navigate_to_review,
+        )
+    else:
+        cta_cols[1].button(
+            "Открыть контроль бюджета",
+            key=make_widget_key("plan_go_to_control", profile["id"], report_month),
+            on_click=navigate_to,
+            args=("Контроль",),
+        )
+
+    st.subheader("Ваш план на месяц")
+    st.caption("Это лимиты, которые будут использоваться в контроле бюджета. Их можно задать вручную и менять в любой момент.")
     render_metric_grid(
         [
-            {"label": "Рекомендуемый план месяца", "value": money(raw_limit)},
-            {"label": "Готовая часть", "value": money(clean_limit)},
-            {"label": "Требует разметки", "value": money(raw_unparsed_transfers), "status": "warn" if raw_unparsed_transfers else "good"},
-            {"label": "Текущий принятый план", "value": money(float(profile.get("monthly_limit") or 0))},
+            {"label": "Текущий принятый план", "value": money(accepted_limit)},
+            {"label": "Ручной план", "value": "можно настроить сейчас"},
         ]
     )
-    render_attention_card(
-        "Рекомендация",
-        "Сейчас план можно принять как предварительный. Если есть операции, которые нужно уточнить, после очистки план станет точнее.",
-        "warn" if raw_unparsed_transfers else "good",
-    )
-    if raw_unparsed_transfers:
-        st.warning("В плане есть операции, которые лучше разобрать на странице “Очистка”. План можно принять, но категории стоит уточнить.")
-
+    if st.session_state.pop("plan_manual_focus", False):
+        st.info("Ниже можно поправить лимиты по категориям и сохранить рабочий план.")
     render_manual_plan_editor(profile)
+
+    st.subheader(plan_accuracy_title())
+    st.caption("Это влияет только на автоматическую рекомендацию. Ручной план можно использовать уже сейчас.")
+    current_month_note = (
+        f"{month_text} ещё не проверен"
+        if int(accuracy["review_count"]) > 0
+        else (f"{month_text}: операций для проверки нет" if int(accuracy.get("operations_count") or 0) else f"{month_text}: нет данных")
+    )
+    render_metric_grid(
+        [
+            {"label": "Проверенных месяцев", "value": f"{accuracy['verified_months']} / {accuracy['required_months']}"},
+            {"label": "Операций на проверку", "value": str(accuracy["review_count"]), "status": "warn" if int(accuracy["review_count"]) else "good"},
+            {"label": "Нужно уточнить", "value": money(float(accuracy["review_amount"])), "status": "warn" if float(accuracy["review_amount"]) else "good"},
+            {"label": "Рекомендация", "value": str(accuracy["recommendation_status"])},
+        ]
+    )
+    st.caption(f"{current_month_note}. Точная рекомендация появится после 3 проверенных месяцев.")
+    with st.container(border=True):
+        st.markdown("**Как сервис сделает план точнее**")
+        st.caption("1. Вы проверяете операции месяца · 2. Сервис запоминает правила · 3. После 3 проверенных месяцев предлагает точный план.")
+        st.caption("Первые месяцы план лучше задавать вручную. Сервис будет учиться на проверенной истории.")
     st.divider()
 
-    st.subheader("Рекомендуемый план")
+    recommendation_title = (
+        "Рекомендация по проверенной истории"
+        if recommendation_stage(accuracy) == "accurate_available"
+        else "Предварительная рекомендация"
+    )
+    st.subheader(recommendation_title)
+    if recommendation_stage(accuracy) == "accurate_available":
+        st.caption("Истории достаточно для автоматического плана по проверенным месяцам.")
+    else:
+        st.caption("Сервис может дать черновой ориентир по загруженной истории, но точная рекомендация появится после 3 проверенных месяцев.")
+    if int(accuracy["review_count"]) > 0:
+        st.warning("В истории есть неразобранные операции. Рекомендация может измениться после проверки.")
+    draft_label = plan_mode_label("draft_all_history")
+    verified_label = plan_mode_label("verified_months")
     plan_mode = st.radio(
         "Режим плана",
-        ["План с неразобранными операциями по массиву", "План по очищенным данным"],
+        [draft_label, verified_label],
         horizontal=True,
         key=make_widget_key("simple_auto_plan_mode", profile["id"], report_month),
     )
+    st.caption(plan_mode_description("draft_all_history" if plan_mode == draft_label else "verified_months"))
+    if plan_mode == verified_label and not bool(accuracy["has_enough_verified_months"]):
+        st.info(f"Для точной автоматической рекомендации нужно 3 проверенных месяца. Сейчас: {accuracy['verified_months']} из {accuracy['required_months']}.")
     col1, col2, col3, col4 = st.columns(4)
     history_months = col1.selectbox("Период истории", [3, 6, 12], index=1, key=make_widget_key("simple_auto_plan_history", profile["id"], report_month))
     strategy_label = col2.selectbox("Стратегия", ["медиана", "p75"], key=make_widget_key("simple_auto_plan_strategy", profile["id"], report_month))
@@ -3561,13 +3739,13 @@ def render_simplified_plan_tab(
         profile,
     )
     write_layered_plan_debug(layered_debug)
-    st.subheader("Нагрузка месяца по слоям")
+    st.subheader("Из чего складывается предварительная рекомендация")
     render_metric_grid(
         [
             {"label": "Базовый план жизни", "value": money(layered_summary.base_living_plan)},
             {"label": "Обязательства и кредиты", "value": money(layered_summary.obligations_plan), "status": "warn" if layered_summary.obligations_plan else None},
-            {"label": "Требует разметки", "value": money(layered_summary.unresolved_plan), "status": "warn" if layered_summary.unresolved_plan else "good"},
-            {"label": "Итого возможная нагрузка", "value": money(layered_summary.recommended_total), "status": "warn" if layered_summary.warnings else None},
+            {"label": "Нужно уточнить", "value": money(layered_summary.unresolved_plan), "status": "warn" if layered_summary.unresolved_plan else "good"},
+            {"label": "Ориентир месяца", "value": money(layered_summary.recommended_total), "status": "warn" if layered_summary.warnings else None},
         ]
     )
     st.caption(
@@ -3575,7 +3753,7 @@ def render_simplified_plan_tab(
         "Неразобранные операции включены отдельно, чтобы план не был занижен."
     )
     if layered_summary.warnings:
-        st.warning("План предварительный. Перед использованием разберите крупные переводы и проверьте кредитные обязательства.")
+        st.warning("Рекомендация предварительная: после проверки операций она может измениться.")
         with st.expander("Предупреждения качества плана"):
             warning_labels = {
                 "owner_mismatch_files": "Есть выписки с владельцем, отличающимся от профиля.",
@@ -3595,23 +3773,27 @@ def render_simplified_plan_tab(
     mode_key = make_widget_key("simple_recommended_plan_mode", profile["id"], report_month)
     hist_key = make_widget_key("simple_recommended_plan_history", profile["id"], report_month)
     calc_a, calc_b = st.columns(2)
-    if calc_a.button("Рассчитать план по слоям", key=make_widget_key("simple_calculate_layered", profile["id"], report_month, history_months)):
+    if calc_a.button("Рассчитать предварительную рекомендацию", key=make_widget_key("simple_calculate_layered", profile["id"], report_month, history_months)):
         st.session_state[rec_key] = layered_recommended
-        st.session_state[mode_key] = "План по слоям"
+        st.session_state[mode_key] = draft_label
         st.session_state[hist_key] = history_months_used
-    if calc_b.button("Рассчитать чистый план", key=make_widget_key("simple_calculate_clean", profile["id"], report_month, history_months)):
+    if calc_b.button(
+        "Рассчитать рекомендацию по проверенной истории",
+        key=make_widget_key("simple_calculate_clean", profile["id"], report_month, history_months),
+        disabled=not bool(accuracy["has_enough_verified_months"]),
+    ):
         st.session_state[rec_key] = build_auto_expense_plan(history, report_month, history_months, strategy, buffer_percent, round_to, profile)
-        st.session_state[mode_key] = "План по очищенным данным"
+        st.session_state[mode_key] = verified_label
         st.session_state[hist_key] = history_months_used
     recommended = st.session_state.get(rec_key, pd.DataFrame())
     if recommended.empty:
-        recommended = layered_recommended if plan_mode == "План с неразобранными операциями по массиву" else build_auto_expense_plan(history, report_month, history_months, strategy, buffer_percent, round_to, profile)
+        recommended = layered_recommended if plan_mode == draft_label else build_auto_expense_plan(history, report_month, history_months, strategy, buffer_percent, round_to, profile)
     totals = recommended_plan_totals(recommended)
     render_metric_grid(
         [
-            {"label": "Рекомендуемый план месяца", "value": money(layered_summary.recommended_total if not layered_recommended.empty else totals["recommended_total"])},
-            {"label": "Готовая часть", "value": money(totals["ready_total"])},
-            {"label": "Требует разметки", "value": money(totals["needs_classification_total"]), "status": "warn" if totals["needs_classification_total"] else "good"},
+            {"label": "Рекомендация", "value": money(layered_summary.recommended_total if plan_mode == draft_label and not layered_recommended.empty else totals["recommended_total"])},
+            {"label": "Достаточно истории", "value": money(totals["ready_total"])},
+            {"label": "Нужно разобрать", "value": money(totals["needs_classification_total"]), "status": "warn" if totals["needs_classification_total"] else "good"},
             {"label": "Мало истории", "value": money(totals["low_history_total"]), "status": "warn" if totals["low_history_total"] else None},
         ]
     )
@@ -3620,14 +3802,28 @@ def render_simplified_plan_tab(
     elif totals["recommended_total"] > 0:
         st.success("План построен по размеченным операциям.")
     st.dataframe(friendly_plan_table(recommended), use_container_width=True, hide_index=True)
-    with st.expander("Подробности расчёта"):
+    with st.expander("Технические детали расчёта"):
         st.dataframe(recommended, use_container_width=True, hide_index=True)
-    if st.button("Принять этот план", disabled=recommended.empty, key=make_widget_key("simple_accept_auto_plan", profile["id"], report_month)):
+    recommended_mode = st.session_state.get(mode_key, plan_mode)
+    if recommended_mode in {"План по слоям", "План с неразобранными операциями по массиву"}:
+        recommended_mode = draft_label
+    elif recommended_mode == "План по очищенным данным":
+        recommended_mode = verified_label
+    accept_label = "Принять как временный план" if recommended_mode == draft_label else "Принять рекомендованный план"
+    accept_disabled = recommended.empty or (recommended_mode == verified_label and not bool(accuracy["has_enough_verified_months"]))
+    if accept_disabled and recommended_mode == verified_label:
+        st.caption("Нужно 3 проверенных месяца.")
+    elif recommended_mode == draft_label:
+        st.caption("После очистки операций рекомендация может измениться.")
+    if st.button(accept_label, disabled=accept_disabled, key=make_widget_key("simple_accept_auto_plan", profile["id"], report_month)):
         recommended_mode = st.session_state.get(mode_key, plan_mode)
-        accepted = recommended[recommended["layer"] != "Мелкие"].copy() if "layer" in recommended.columns else recommended.copy()
-        profile["plan"] = dict(zip(accepted["budget_category"], accepted["suggested_plan"]))
-        profile["monthly_limit"] = float(accepted["suggested_plan"].sum())
-        profile["plan_source"] = "layered_plan" if recommended_mode in {"План по слоям", "План с неразобранными операциями по массиву"} else "clean_auto_plan"
+        if recommended_mode in {"План по слоям", "План с неразобранными операциями по массиву"}:
+            recommended_mode = draft_label
+        elif recommended_mode == "План по очищенным данным":
+            recommended_mode = verified_label
+        profile["plan"] = accepted_plan_from_recommendation(recommended)
+        profile["monthly_limit"] = float(sum(profile["plan"].values()))
+        profile["plan_source"] = "layered_plan" if recommended_mode == draft_label else "clean_auto_plan"
         profile["plan_updated_at"] = datetime.now().isoformat(timespec="seconds")
         profile["plan_history_months_used"] = st.session_state.get(hist_key, history_months_used)
         profile["auto_plan_accepted"] = True
@@ -3639,13 +3835,31 @@ def render_simplified_plan_tab(
     st.subheader("План доходов")
     income_recommended = build_auto_income_plan(history, report_month, history_months, strategy)
     raw_income_recommended = build_raw_income_plan_from_operations(history, report_month, history_months, strategy, 0, round_to, profile)
+    current_month = history.copy()
+    if not current_month.empty and "operation_datetime" in current_month.columns:
+        current_month = current_month[
+            pd.to_datetime(current_month["operation_datetime"], errors="coerce").dt.to_period("M").astype(str) == report_month
+        ]
+    income_review_mask = (
+        (current_month.get("direction", pd.Series("", index=current_month.index)).isin(["income", "incoming"]))
+        & (current_month.get("needs_review", pd.Series(False, index=current_month.index)).fillna(False).astype(bool))
+    ) if not current_month.empty else pd.Series(dtype=bool)
+    if not income_review_mask.empty and bool(income_review_mask.any()):
+        st.warning("Есть поступления на проверку. Они не включены в доходный план, пока вы не уточните их смысл.")
     income_col_a, income_col_b = st.columns(2)
     with income_col_a:
-        st.caption("Чистый план доходов")
-        st.dataframe(income_recommended, use_container_width=True, hide_index=True)
+        st.caption("План личных доходов")
+        st.dataframe(display_income_plan_table(income_recommended), use_container_width=True, hide_index=True)
     with income_col_b:
-        st.caption("Неразобранные поступления")
-        st.dataframe(raw_income_recommended, use_container_width=True, hide_index=True)
+        st.caption("Поступления на проверку")
+        unresolved_income_display = raw_income_recommended.copy()
+        if not unresolved_income_display.empty:
+            category_col = "income_category" if "income_category" in unresolved_income_display.columns else "budget_category"
+            if category_col in unresolved_income_display.columns:
+                unresolved_income_display = unresolved_income_display[
+                    ~unresolved_income_display[category_col].map(is_income_plan_category)
+                ].copy()
+        st.dataframe(display_income_plan_table(unresolved_income_display), use_container_width=True, hide_index=True)
 
 
 def render_plan_tab(profile: dict, history: pd.DataFrame, report_month: str | None) -> None:
@@ -3954,7 +4168,7 @@ def render_plan_tab(profile: dict, history: pd.DataFrame, report_month: str | No
         st.success("План построен по размеченным операциям.")
     st.dataframe(display_recommended_plan(recommended), use_container_width=True, hide_index=True)
     if not recommended.empty:
-        with st.expander("Подробности расчёта"):
+        with st.expander("Технические детали расчёта"):
             st.dataframe(recommended, use_container_width=True, hide_index=True)
     recommended_mode = st.session_state.get(make_widget_key("recommended_plan_mode", profile["id"], report_month), plan_mode)
     accept_disabled = recommended.empty or not enough_history or (

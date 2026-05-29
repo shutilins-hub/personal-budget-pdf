@@ -4,6 +4,8 @@ from typing import Any
 
 import pandas as pd
 
+from category_mapping import INCOME_CATEGORIES, map_expense_category, map_income_category
+
 
 TECHNICAL_OPERATION_COLUMNS = {
     "account_id",
@@ -63,6 +65,39 @@ IMPORT_STATUS_LABELS = {
     None: "Не определён",
 }
 
+PLAN_MODE_LABELS = {
+    "draft_all_history": "Предварительная рекомендация",
+    "verified_months": "Рекомендация по проверенной истории",
+}
+
+PLAN_MODE_DESCRIPTIONS = {
+    "draft_all_history": (
+        "Учитывает загруженную историю, включая операции, которые ещё требуют проверки. "
+        "Подходит только как временный ориентир."
+    ),
+    "verified_months": (
+        "Использует только очищенные месяцы. Станет доступен после 3 проверенных месяцев."
+    ),
+}
+
+PLAN_ACCURACY_TITLE = "Точность рекомендации"
+
+PLAN_STATUS_LABELS = {
+    "ready": "достаточно истории",
+    "low_history": "мало истории",
+    "needs_review": "нужно разобрать",
+    "needs_classification": "нужно разобрать",
+    "manual": "ручной лимит",
+    "excluded": "исключено",
+    "check": "проверить",
+}
+
+UNRESOLVED_INCOME_LABELS = {
+    "Неразобранные поступления / проверить",
+    "Проверить доход",
+    "Поступления на проверку",
+}
+
 SALARY_HINTS = (
     "зарплат",
     "аванс",
@@ -119,6 +154,124 @@ def import_status_label(value: str | None) -> str:
     return IMPORT_STATUS_LABELS.get(value, "Не определён")
 
 
+def plan_mode_label(mode: str) -> str:
+    return PLAN_MODE_LABELS.get(mode, str(mode or ""))
+
+
+def plan_mode_description(mode: str) -> str:
+    return PLAN_MODE_DESCRIPTIONS.get(mode, "")
+
+
+def plan_accuracy_title() -> str:
+    return PLAN_ACCURACY_TITLE
+
+
+def plan_status_label(value: str | None) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    value = str(value)
+    return PLAN_STATUS_LABELS.get(value, value)
+
+
+def canonical_plan_category(label: str | None, kind: str = "expense") -> str:
+    if kind == "income":
+        return map_income_category(str(label or "").strip())
+    return map_expense_category(str(label or "").strip())
+
+
+def is_income_plan_category(label: str | None) -> bool:
+    value = str(label or "").strip()
+    if not value or value in UNRESOLVED_INCOME_LABELS or "провер" in value.casefold():
+        return False
+    return map_income_category(value) in set(INCOME_CATEGORIES)
+
+
+def month_review_metrics(operations: pd.DataFrame, report_month: str | None) -> dict[str, float | int]:
+    if operations.empty or not report_month or "operation_datetime" not in operations.columns:
+        return {"review_count": 0, "review_amount": 0.0, "operations_count": 0}
+    df = operations.copy()
+    month = pd.to_datetime(df["operation_datetime"], errors="coerce").dt.to_period("M").astype(str)
+    df = df[month == report_month].copy()
+    if df.empty:
+        return {"review_count": 0, "review_amount": 0.0, "operations_count": 0}
+    review_mask = df.get("needs_review", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    amount_col = "bank_amount" if "bank_amount" in df.columns else "budget_amount"
+    amounts = pd.to_numeric(df.get(amount_col, pd.Series(0, index=df.index)), errors="coerce").fillna(0).abs()
+    return {
+        "review_count": int(review_mask.sum()),
+        "review_amount": float(amounts[review_mask].sum()),
+        "operations_count": int(len(df)),
+    }
+
+
+def build_plan_accuracy(
+    operations: pd.DataFrame,
+    report_month: str | None,
+    required_months: int = 3,
+) -> dict[str, object]:
+    metrics = month_review_metrics(operations, report_month)
+    if operations.empty or "operation_datetime" not in operations.columns:
+        verified_months = 0
+    else:
+        df = operations.copy()
+        df["month"] = pd.to_datetime(df["operation_datetime"], errors="coerce").dt.to_period("M").astype(str)
+        df = df[df["month"].notna() & (df["month"] != "NaT")]
+        if df.empty:
+            verified_months = 0
+        else:
+            review = df.get("needs_review", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+            month_stats = df.assign(_needs_review=review).groupby("month")["_needs_review"].agg(["count", "sum"])
+            verified_months = int(((month_stats["count"] > 0) & (month_stats["sum"] == 0)).sum())
+    operations_count = int(metrics["operations_count"])
+    review_count = int(metrics["review_count"])
+    if operations_count == 0:
+        current_month_status = "нет данных"
+    elif review_count > 0:
+        current_month_status = "требует проверки"
+    else:
+        current_month_status = "готов"
+    if verified_months >= required_months and review_count == 0:
+        recommendation_status = "точная"
+    elif verified_months > 0 and review_count == 0:
+        recommendation_status = "можно использовать"
+    else:
+        recommendation_status = "предварительная"
+    return {
+        "verified_months": min(verified_months, required_months),
+        "actual_clean_months": verified_months,
+        "required_months": required_months,
+        "current_month_status": current_month_status,
+        "review_count": review_count,
+        "review_amount": float(metrics["review_amount"]),
+        "operations_count": operations_count,
+        "recommendation_status": recommendation_status,
+        "has_enough_verified_months": verified_months >= required_months,
+    }
+
+
+def plan_primary_status(accuracy: dict[str, object]) -> tuple[str, str]:
+    review_count = int(accuracy.get("review_count") or 0)
+    verified_months = int(accuracy.get("verified_months") or 0)
+    required_months = int(accuracy.get("required_months") or 3)
+    if review_count > 0:
+        return (
+            "План предварительный",
+            f"Есть {review_count} операций на проверку. После очистки месяца рекомендации станут точнее.",
+        )
+    if verified_months < required_months:
+        return (
+            "Недостаточно проверенной истории",
+            f"Для точного плана нужно {required_months} проверенных месяца. Сейчас: {verified_months} из {required_months}.",
+        )
+    return ("Можно принять рекомендованный план", "История достаточно чистая для расчёта.")
+
+
+def recommendation_stage(accuracy: dict[str, object]) -> str:
+    if bool(accuracy.get("has_enough_verified_months")):
+        return "accurate_available"
+    return "preliminary"
+
+
 def operation_display_label(value: str | None) -> str:
     if value is None or pd.isna(value):
         return ""
@@ -147,17 +300,31 @@ def cleanup_anchor_kind(candidate_or_row: dict[str, Any] | pd.Series) -> str:
 def cleanup_cta_label(candidate_or_row: dict[str, Any] | pd.Series, direction_kind: str = "") -> str:
     kind = cleanup_anchor_kind(candidate_or_row)
     direction = str(candidate_or_row.get("direction") or direction_kind or "")
-    count = int(candidate_or_row.get("count") or 1)
-    months_seen = int(candidate_or_row.get("months_seen") or 1)
     if direction in {"income", "incoming"} and kind == "person":
-        return "Уточнить поступление"
+        return "Показать поступления"
     if kind == "merchant":
-        return "Запомнить категорию"
-    if count > 1 or months_seen >= 2:
-        return "Назначить правило"
-    if kind == "operation":
-        return "Проверить операцию"
-    return "Уточнить смысл"
+        return "Показать операции"
+    return "Показать операции месяца"
+
+
+def cleanup_group_focus_action(candidate_or_row: dict[str, Any] | pd.Series) -> dict[str, str] | None:
+    anchor = str(candidate_or_row.get("anchor") or "").strip()
+    if not anchor:
+        return None
+    return {"target": "month_rows", "anchor": anchor}
+
+
+def cleanup_primary_focus(operations: pd.DataFrame, recurring_groups: pd.DataFrame | None = None) -> str:
+    if not operations.empty and "needs_review" in operations.columns:
+        if int(operations["needs_review"].fillna(False).astype(bool).sum()) > 0:
+            return "month_rows"
+    if recurring_groups is not None and not recurring_groups.empty:
+        return "recurring_hints"
+    return "done"
+
+
+def offer_rule_before_operation() -> bool:
+    return False
 
 
 def cleanup_apply_options(candidate_or_row: dict[str, Any] | pd.Series, amount_rule_supported: bool = False) -> list[str]:
