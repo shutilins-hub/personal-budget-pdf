@@ -17,7 +17,15 @@ from category_mapping import EXPENSE_CATEGORIES, INCOME_CATEGORIES
 from classifier import build_rule_from_operation, classify_operations, rule_matches
 from debug_exports import debug_exports_enabled
 from financial_health import build_financial_health_report
-from operation_labels import EXPENSE_OPERATION_LABELS, INCOME_OPERATION_LABELS
+from operation_labels import (
+    EXPENSE_OPERATION_LABELS,
+    INCOME_OPERATION_LABELS,
+    SPLIT_OPERATION_LABELS,
+    build_split_allocation_from_ui,
+    default_split_labels_for_direction,
+    split_label_category_kind,
+    split_total_state,
+)
 from pdf_parser import detect_bank, extract_text_from_uploaded_pdf, parse_text
 from privacy import sanitize_text
 from planner import build_auto_expense_plan, build_auto_income_plan, build_auto_plan
@@ -102,8 +110,10 @@ from storage import (
     latest_operation_date,
     operations_df,
     allocations_df,
+    get_operation_allocations,
     save_profile,
     save_custom_categories,
+    save_operation_allocations,
     save_merchant_rules,
     save_plan_rules,
     update_operation,
@@ -2171,6 +2181,9 @@ def display_operations(operations: pd.DataFrame, include_technical: bool = False
 
 def editable_review(profile: dict, operations: pd.DataFrame, key_prefix: str = "review") -> None:
     review = operations[operations["needs_review"] == True]
+    split_message = st.session_state.pop("split_success_message", None)
+    if split_message:
+        st.success(split_message)
     if review.empty:
         st.info("Сейчас нет операций, которые нужно проверить.")
         return
@@ -2320,11 +2333,154 @@ def manual_planning_updates(operation_type: str, category: str, personal_amount:
     }
 
 
+def split_category_options(profile: dict, label: str, fallback_category: str = "") -> list[str]:
+    kind = split_label_category_kind(label)
+    if kind == "income":
+        return income_categories(profile)
+    if kind == "expense":
+        options = expense_categories(profile)
+        if fallback_category and fallback_category not in options and fallback_category != "Разделено":
+            return [fallback_category, *options]
+        return options
+    return ["Не учитывать"]
+
+
+def split_default_category(profile: dict, label: str, fallback_category: str = "") -> str:
+    options = split_category_options(profile, label, fallback_category)
+    if split_label_category_kind(label) == "income":
+        return options[0] if options else "Прочий доход"
+    if fallback_category in options and fallback_category not in {"", "Разделено"}:
+        return fallback_category
+    if "Прочее / проверить" in options:
+        return "Прочее / проверить"
+    return options[0] if options else ""
+
+
+def split_allocations_display(rows: pd.DataFrame) -> pd.DataFrame:
+    if rows.empty:
+        return pd.DataFrame()
+    display = rows.copy()
+    if "amount" in display.columns:
+        display["amount"] = display["amount"].apply(money)
+    if "operation_type" in display.columns:
+        display["operation_type"] = display["operation_type"].apply(operation_display_label)
+    renamed = display.rename(
+        columns={
+            "amount": "сумма",
+            "operation_type": "тип",
+            "budget_category": "категория",
+            "comment": "комментарий",
+        }
+    )
+    return renamed[[col for col in ["сумма", "тип", "категория", "комментарий"] if col in renamed.columns]]
+
+
+def render_existing_split_allocations(operation_id: str) -> bool:
+    rows = get_operation_allocations(operation_id)
+    if rows.empty:
+        return False
+    st.info("Операция уже разделена на части.")
+    st.dataframe(split_allocations_display(rows), use_container_width=True, hide_index=True)
+    st.caption("Редактирование split будет добавлено позже.")
+    return True
+
+
+def render_split_editor(profile: dict, row: pd.Series, row_key: str) -> None:
+    operation_id = str(row["id"])
+    if render_existing_split_allocations(operation_id):
+        return
+
+    with st.expander("Разделить сумму на части", expanded=False):
+        st.caption(
+            "Используйте разделение, если одна банковская операция относится к нескольким смыслам: "
+            "например, часть — кафе, часть — такси, часть — подарок."
+        )
+        if str(row.get("direction") or "") == "income":
+            st.caption(
+                "Поступление тоже можно разделить: например, часть — компенсация расхода, "
+                "часть — возврат долга."
+            )
+        st.caption("Разделение не создаёт постоянное правило. Оно применяется только к этой операции.")
+
+        parts_count = st.number_input(
+            "Количество частей",
+            min_value=2,
+            max_value=5,
+            value=2,
+            step=1,
+            key=make_widget_key(row_key, "split_parts_count"),
+        )
+        default_labels = default_split_labels_for_direction(str(row.get("direction") or "expense"))
+        allocations: list[dict] = []
+        fallback_category = str(row.get("budget_category") or "Прочее / проверить")
+        for index in range(int(parts_count)):
+            default_label = default_labels[index] if index < len(default_labels) else default_labels[-1]
+            st.markdown(f"**Часть {index + 1}**")
+            amount_col, type_col, category_col = st.columns([1, 1.2, 1.5])
+            amount = amount_col.number_input(
+                "Сумма",
+                min_value=0.0,
+                value=0.0,
+                step=100.0,
+                key=make_widget_key(row_key, "split_amount", index),
+            )
+            label = type_col.selectbox(
+                "Тип",
+                SPLIT_OPERATION_LABELS,
+                index=SPLIT_OPERATION_LABELS.index(default_label),
+                key=make_widget_key(row_key, "split_type", index),
+            )
+            options = split_category_options(profile, label, fallback_category)
+            default_category = split_default_category(profile, label, fallback_category)
+            if split_label_category_kind(label) == "none":
+                category_col.caption("Категория не нужна")
+                category = ""
+            else:
+                category = category_col.selectbox(
+                    "Категория",
+                    options,
+                    index=options.index(default_category) if default_category in options else 0,
+                    key=make_widget_key(row_key, "split_category", index, label),
+                )
+            comment = st.text_input(
+                "Комментарий",
+                value="",
+                key=make_widget_key(row_key, "split_comment", index),
+            )
+            allocations.append(build_split_allocation_from_ui(label, amount, category, comment))
+
+        totals = split_total_state(float(row.get("bank_amount") or 0), allocations)
+        st.caption(f"Сумма операции: {money(totals['operation_total'])}")
+        st.caption(f"Распределено: {money(totals['distributed'])}")
+        if totals["is_complete"]:
+            st.success("Сумма распределена полностью.")
+        else:
+            st.warning(f"Осталось распределить: {money(totals['remaining'])}")
+
+        ok, message = storage.validate_operation_allocations(row, allocations)
+        if message and not ok:
+            st.caption(message)
+        if st.button(
+            "Сохранить разделение",
+            key=make_widget_key(row_key, "save_split"),
+            disabled=not ok,
+        ):
+            try:
+                save_operation_allocations(operation_id, profile["id"], allocations)
+            except ValueError as exc:
+                st.error(str(exc))
+                return
+            st.session_state["split_success_message"] = "Операция разделена на части. Расчёты месяца обновлены."
+            st.rerun()
+
+
 def render_review_rows(profile: dict, review: pd.DataFrame, mode: str, key_prefix: str = "review") -> None:
     for _, row in review.head(30).iterrows():
         with st.expander(format_review_operation_line(row)):
             st.caption(f"{row.get('bank', '')} · сейчас: {row.get('operation_type', 'Проверить')} · {row.get('budget_category', 'Прочее / проверить')}")
             row_key = make_widget_key(key_prefix, mode, row["id"])
+            render_split_editor(profile, row, row_key)
+            st.divider()
             render_quick_buttons(row, expense_categories(profile), row_key, row.get("budget_category", "Прочее / проверить"))
             st.divider()
             if row["direction"] == "income":
